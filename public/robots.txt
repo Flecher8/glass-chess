@@ -1,0 +1,4 @@
+User-Agent: *
+Allow: /
+
+Sitemap: https://glass-chess.vercel.app/sitemap.xml
