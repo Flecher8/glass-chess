@@ -389,6 +389,13 @@ export function AnalysisTool() {
     return reviewAfterClientRef.current;
   }, []);
 
+  const disposeReviewClients = useCallback(() => {
+    reviewBeforeClientRef.current?.dispose();
+    reviewAfterClientRef.current?.dispose();
+    reviewBeforeClientRef.current = null;
+    reviewAfterClientRef.current = null;
+  }, []);
+
   const analyzeFen = useCallback(
     async (fen: string, engineSettings: EngineSettings, onUpdate?: (result: EngineAnalysisResult) => void) => {
       const client = getClient();
@@ -404,22 +411,21 @@ export function AnalysisTool() {
 
   const clearMoveQualityState = useCallback(() => {
     automaticReviewVersionRef.current += 1;
-    reviewBeforeClientRef.current?.stop();
-    reviewAfterClientRef.current?.stop();
+    disposeReviewClients();
     setReviews({});
     setQuickClassifications({});
     setPendingMoveReviews({});
-  }, []);
+  }, [disposeReviewClients]);
 
-  const queueMoveReview = useCallback(
-    (move: GameMove, movesSnapshot: GameMove[]) => {
+  const reviewMoveProgressively = useCallback(
+    async (move: GameMove, movesSnapshot: GameMove[], reviewVersion: number) => {
       if (isBookMove(movesSnapshot, move.ply)) {
-        return;
+        const review: MoveReview = { ply: move.ply, classification: "Book", pv: [] };
+        setReviews((current) => ({ ...current, [move.ply]: review }));
+        return review;
       }
 
       const signature = moveSignature(move);
-      automaticReviewVersionRef.current += 1;
-      const reviewVersion = automaticReviewVersionRef.current;
       const reviewSettings: EngineSettings = {
         ...engineAnalysisSettings,
         multiPv: 1,
@@ -428,103 +434,108 @@ export function AnalysisTool() {
       };
 
       setPendingMoveReviews((current) => ({ ...current, [move.ply]: signature }));
+      if (reviewVersion !== automaticReviewVersionRef.current) {
+        setPendingMoveReviews((current) => (current[move.ply] === signature ? removeRecordPly(current, move.ply) : current));
+        return null;
+      }
 
-      const runReview = async () => {
-        if (reviewVersion !== automaticReviewVersionRef.current) {
-          return;
-        }
+      const beforeByDepth = new Map<number, EngineAnalysisResult>();
+      const afterByDepth = new Map<number, EngineAnalysisResult>();
+      let publishedDepth = 0;
+      let latestReview: MoveReview | null = null;
 
-        const beforeByDepth = new Map<number, EngineAnalysisResult>();
-        const afterByDepth = new Map<number, EngineAnalysisResult>();
-        let publishedDepth = 0;
+      const isStillActive = () => {
+        const activeMove = gameRef.current.moves[move.ply - 1];
+        return reviewVersion === automaticReviewVersionRef.current && Boolean(activeMove && moveSignature(activeMove) === signature);
+      };
 
-        const isStillActive = () => {
-          const activeMove = gameRef.current.moves[move.ply - 1];
-          return reviewVersion === automaticReviewVersionRef.current && Boolean(activeMove && moveSignature(activeMove) === signature);
-        };
-
-        const rememberResult = (collection: Map<number, EngineAnalysisResult>, result: EngineAnalysisResult) => {
-          const depth = result.lines[0]?.depth;
-          if (depth) {
-            collection.set(depth, result);
-          }
-        };
-
-        const publishBestAvailableReview = (force = false) => {
-          if (!isStillActive()) {
-            return;
-          }
-
-          const matchingDepths = [...beforeByDepth.keys()].filter((depth) => afterByDepth.has(depth));
-          const depth = matchingDepths.length > 0 ? Math.max(...matchingDepths) : 0;
-
-          if (!depth || (!force && depth <= publishedDepth)) {
-            return;
-          }
-
-          const before = beforeByDepth.get(depth);
-          const after = afterByDepth.get(depth);
-          if (!before || !after) {
-            return;
-          }
-
-          publishedDepth = depth;
-          const review = classifyMove(move, before, after);
-          setReviews((current) => ({ ...current, [move.ply]: review }));
-          setQuickClassifications((current) => removeRecordPly(current, move.ply));
-          setMessage(`${review.classification} at depth ${depth}`);
-        };
-
-        try {
-          const beforeClient = getReviewBeforeClient();
-          const afterClient = getReviewAfterClient();
-          await Promise.all([beforeClient.init(), afterClient.init()]);
-
-          if (!isStillActive()) {
-            return;
-          }
-
-          const [before, after] = await Promise.all([
-            beforeClient.analyze(move.before, reviewSettings, {
-              minimumLineCount: 1,
-              multiPv: 1,
-              onUpdate: (result) => {
-                rememberResult(beforeByDepth, result);
-                publishBestAvailableReview();
-              }
-            }),
-            afterClient.analyze(move.after, reviewSettings, {
-              minimumLineCount: 1,
-              multiPv: 1,
-              onUpdate: (result) => {
-                rememberResult(afterByDepth, result);
-                publishBestAvailableReview();
-              }
-            })
-          ]);
-
-          rememberResult(beforeByDepth, before);
-          rememberResult(afterByDepth, after);
-          publishBestAvailableReview(true);
-        } catch (error) {
-          if (!isEngineCancellation(error) && reviewVersion === automaticReviewVersionRef.current) {
-            setMessage(error instanceof Error ? error.message : "Move review failed.");
-          }
-        } finally {
-          setPendingMoveReviews((current) => (current[move.ply] === signature ? removeRecordPly(current, move.ply) : current));
+      const rememberResult = (collection: Map<number, EngineAnalysisResult>, result: EngineAnalysisResult) => {
+        const depth = result.lines[0]?.depth;
+        if (depth) {
+          collection.set(depth, result);
         }
       };
 
-      void runReview();
+      const publishBestAvailableReview = (force = false) => {
+        if (!isStillActive()) {
+          return;
+        }
+
+        const matchingDepths = [...beforeByDepth.keys()].filter((depth) => afterByDepth.has(depth));
+        const depth = matchingDepths.length > 0 ? Math.max(...matchingDepths) : 0;
+
+        if (!depth || (!force && depth <= publishedDepth)) {
+          return;
+        }
+
+        const before = beforeByDepth.get(depth);
+        const after = afterByDepth.get(depth);
+        if (!before || !after) {
+          return;
+        }
+
+        publishedDepth = depth;
+        const review = classifyMove(move, before, after);
+        latestReview = review;
+        setReviews((current) => ({ ...current, [move.ply]: review }));
+        setQuickClassifications((current) => removeRecordPly(current, move.ply));
+        setMessage(`${review.classification} at depth ${depth}`);
+      };
+
+      try {
+        const beforeClient = getReviewBeforeClient();
+        const afterClient = getReviewAfterClient();
+        await Promise.all([beforeClient.init(), afterClient.init()]);
+
+        if (!isStillActive()) {
+          return null;
+        }
+
+        const [before, after] = await Promise.all([
+          beforeClient.analyze(move.before, reviewSettings, {
+            minimumLineCount: 1,
+            multiPv: 1,
+            onUpdate: (result) => {
+              rememberResult(beforeByDepth, result);
+              publishBestAvailableReview();
+            }
+          }),
+          afterClient.analyze(move.after, reviewSettings, {
+            minimumLineCount: 1,
+            multiPv: 1,
+            onUpdate: (result) => {
+              rememberResult(afterByDepth, result);
+              publishBestAvailableReview();
+            }
+          })
+        ]);
+
+        rememberResult(beforeByDepth, before);
+        rememberResult(afterByDepth, after);
+        publishBestAvailableReview(true);
+        return latestReview;
+      } catch (error) {
+        if (!isEngineCancellation(error) && reviewVersion === automaticReviewVersionRef.current) {
+          setMessage(error instanceof Error ? error.message : "Move review failed.");
+        }
+        return null;
+      } finally {
+        setPendingMoveReviews((current) => (current[move.ply] === signature ? removeRecordPly(current, move.ply) : current));
+      }
     },
     [engineAnalysisSettings, getReviewAfterClient, getReviewBeforeClient]
   );
 
-  useEffect(() => {
-    if (reviewProgress.active) {
-      return;
-    }
+  const queueMoveReview = useCallback(
+    (move: GameMove, movesSnapshot: GameMove[]) => {
+      automaticReviewVersionRef.current += 1;
+      disposeReviewClients();
+      void reviewMoveProgressively(move, movesSnapshot, automaticReviewVersionRef.current);
+    },
+    [disposeReviewClients, reviewMoveProgressively]
+  );
 
+  useEffect(() => {
     let isActive = true;
     const requestId = autoAnalysisRef.current + 1;
     autoAnalysisRef.current = requestId;
@@ -568,7 +579,7 @@ export function AnalysisTool() {
       window.clearTimeout(timer);
       clientRef.current?.stop();
     };
-  }, [analyzeFen, currentFen, engineAnalysisSettings, reviewProgress.active]);
+  }, [analyzeFen, currentFen, engineAnalysisSettings]);
 
   const classifyMoveFromCurrentCandidates = useCallback(
     (move: GameMove, moves = game.moves): MoveClassification | undefined => {
@@ -627,6 +638,7 @@ export function AnalysisTool() {
 
       if (nextGame !== game) {
         const retainedPly = game.currentPly;
+        gameRef.current = nextGame;
         setGame(nextGame);
         setReviews((current) => retainRecordThroughPly(current, retainedPly));
         setPendingMoveReviews((current) => retainRecordThroughPly(current, retainedPly));
@@ -641,6 +653,53 @@ export function AnalysisTool() {
     [analysis, currentFen, game, queueMoveReview]
   );
 
+  const reviewMovesProgressively = useCallback(
+    async (moves: GameMove[], startMessage = "Review running") => {
+      if (moves.length === 0) {
+        setMessage("Load a PGN or make moves before reviewing.");
+        return;
+      }
+
+      cancelReviewRef.current = false;
+      automaticReviewVersionRef.current += 1;
+      const reviewVersion = automaticReviewVersionRef.current;
+      disposeReviewClients();
+      setReviews({});
+      setQuickClassifications({});
+      setPendingMoveReviews({});
+      setReviewProgress({ active: true, current: 0, total: moves.length });
+      setMessage(startMessage);
+
+      try {
+        for (const move of moves) {
+          if (cancelReviewRef.current || reviewVersion !== automaticReviewVersionRef.current) {
+            break;
+          }
+
+          await reviewMoveProgressively(move, moves, reviewVersion);
+
+          if (cancelReviewRef.current || reviewVersion !== automaticReviewVersionRef.current) {
+            break;
+          }
+
+          setReviewProgress({ active: true, current: move.ply, total: moves.length });
+        }
+
+        if (reviewVersion === automaticReviewVersionRef.current) {
+          setReviewProgress((progress) => ({ ...progress, active: false }));
+          setMessage(cancelReviewRef.current ? "Review cancelled" : "Review complete");
+        }
+      } catch (error) {
+        if (reviewVersion === automaticReviewVersionRef.current) {
+          setEngineStatus("error");
+          setReviewProgress((progress) => ({ ...progress, active: false }));
+          setMessage(error instanceof Error ? error.message : "Game review failed.");
+        }
+      }
+    },
+    [disposeReviewClients, reviewMoveProgressively]
+  );
+
   const handleFenLoad = () => {
     const result = loadFen(fenInput);
     if (!result.ok) {
@@ -648,7 +707,9 @@ export function AnalysisTool() {
       return;
     }
     clearMoveQualityState();
-    setGame(setGameFromFen(result.value));
+    const nextGame = setGameFromFen(result.value);
+    gameRef.current = nextGame;
+    setGame(nextGame);
     setMessage("FEN loaded");
   };
 
@@ -660,8 +721,19 @@ export function AnalysisTool() {
     }
 
     clearMoveQualityState();
-    setGame(setGameFromMoves(result.value.initialFen, result.value.moves));
-    setMessage(hasLongGameWarning(result.value.moves.length) ? "PGN loaded. Long game analysis may take time." : "PGN loaded");
+    const nextGame = setGameFromMoves(result.value.initialFen, result.value.moves);
+    gameRef.current = nextGame;
+    setGame(nextGame);
+
+    if (nextGame.moves.length > 0) {
+      void reviewMovesProgressively(
+        nextGame.moves,
+        hasLongGameWarning(nextGame.moves.length) ? "PGN loaded. Reviewing moves; long game may take time." : "PGN loaded. Reviewing moves."
+      );
+      return;
+    }
+
+    setMessage("PGN loaded");
   };
 
   const handleDrop = useCallback(
@@ -675,6 +747,7 @@ export function AnalysisTool() {
         return false;
       }
 
+      gameRef.current = nextGame;
       setGame(nextGame);
       const playedMove = nextGame.moves[nextGame.currentPly - 1];
       const classification = playedMove ? classifyMoveFromCurrentCandidates(playedMove, nextGame.moves) : undefined;
@@ -698,61 +771,15 @@ export function AnalysisTool() {
     cancelReviewRef.current = true;
     automaticReviewVersionRef.current += 1;
     clientRef.current?.stop();
-    reviewBeforeClientRef.current?.stop();
-    reviewAfterClientRef.current?.stop();
+    disposeReviewClients();
     setPendingMoveReviews({});
     setReviewProgress((progress) => ({ ...progress, active: false }));
     setEngineStatus("ready");
     setMessage("Analysis stopped");
   };
 
-  const reviewGame = async () => {
-    if (game.moves.length === 0) {
-      setMessage("Load a PGN or make moves before reviewing.");
-      return;
-    }
-
-    cancelReviewRef.current = false;
-    automaticReviewVersionRef.current += 1;
-    reviewBeforeClientRef.current?.stop();
-    reviewAfterClientRef.current?.stop();
-    setReviews({});
-    setQuickClassifications({});
-    setPendingMoveReviews({});
-    setReviewProgress({ active: true, current: 0, total: game.moves.length });
-    setMessage("Review running");
-
-    try {
-      for (const move of game.moves) {
-        if (cancelReviewRef.current) {
-          break;
-        }
-
-        if (isBookMove(game.moves, move.ply)) {
-          setReviews((current) => ({ ...current, [move.ply]: { ply: move.ply, classification: "Book", pv: [] } }));
-          setReviewProgress({ active: true, current: move.ply, total: game.moves.length });
-          continue;
-        }
-
-        const before = await analyzeFen(move.before, engineAnalysisSettings);
-        if (cancelReviewRef.current) {
-          break;
-        }
-
-        const after = await analyzeFen(move.after, engineAnalysisSettings);
-        const review = classifyMove(move, before, after);
-
-        setReviews((current) => ({ ...current, [move.ply]: review }));
-        setReviewProgress({ active: true, current: move.ply, total: game.moves.length });
-      }
-
-      setReviewProgress((progress) => ({ ...progress, active: false }));
-      setMessage(cancelReviewRef.current ? "Review cancelled" : "Review complete");
-    } catch (error) {
-      setEngineStatus("error");
-      setReviewProgress((progress) => ({ ...progress, active: false }));
-      setMessage(error instanceof Error ? error.message : "Game review failed.");
-    }
+  const reviewGame = () => {
+    void reviewMovesProgressively(game.moves);
   };
 
   const squareRenderer = useCallback<SquareRenderer>(
@@ -1115,7 +1142,9 @@ export function AnalysisTool() {
                 type="button"
                 onClick={() => {
                   clearMoveQualityState();
-                  setGame(createInitialGameState());
+                  const nextGame = createInitialGameState();
+                  gameRef.current = nextGame;
+                  setGame(nextGame);
                   setMessage("Board reset");
                 }}
               >

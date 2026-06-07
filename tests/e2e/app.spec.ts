@@ -44,3 +44,29 @@ test("desktop arrow keys navigate loaded game moves", async ({ page }, testInfo)
   await page.keyboard.press("ArrowRight");
   await expect(currentFen).toHaveText(finalPosition ?? "");
 });
+
+test("PGN import starts automatic move review", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium", "Engine review check runs only on desktop.");
+
+  await page.goto("/analysis");
+  await page.evaluate(() => {
+    window.localStorage.setItem(
+      "glass-chess-preferences",
+      JSON.stringify({
+        version: 2,
+        orientation: "white",
+        settings: { mode: "lite", depth: 4, multiPv: 3, showBestLine: true, evalFormat: "centipawn" }
+      })
+    );
+  });
+  await page.reload({ waitUntil: "networkidle" });
+
+  await page
+    .getByLabel("PGN input")
+    .fill(`[Event "Auto Review"]\n[White "White"]\n[Black "Black"]\n[Result "*"]\n\n1. e4 e5 2. Ke2 *`);
+  await page.getByRole("button", { name: /load pgn/i }).click();
+
+  const unusualMoveLabel = page.locator('ol[class*="moveTable"] button', { hasText: "Ke2" }).locator("small");
+  await expect(unusualMoveLabel).toBeVisible({ timeout: 30000 });
+  await expect(unusualMoveLabel).not.toHaveText("Reviewing", { timeout: 30000 });
+});
