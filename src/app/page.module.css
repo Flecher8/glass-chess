@@ -1,0 +1,119 @@
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(320px, 0.95fr);
+  gap: 44px;
+  align-items: center;
+  width: min(1180px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 72px 0 38px;
+}
+
+.heroText h1 {
+  margin: 0;
+  max-width: 720px;
+  color: var(--text);
+  font-size: clamp(3rem, 7vw, 6.5rem);
+  line-height: 0.95;
+  letter-spacing: 0;
+}
+
+.heroText p:not(.eyebrow) {
+  max-width: 660px;
+  margin: 22px 0 0;
+  color: var(--muted);
+  font-size: 1.12rem;
+  line-height: 1.8;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 30px;
+}
+
+.primaryAction,
+.secondaryAction {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 8px;
+  padding: 13px 18px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.primaryAction {
+  border: 1px solid var(--border-strong);
+  background: linear-gradient(135deg, rgba(126, 231, 184, 0.24), rgba(102, 178, 255, 0.18));
+  color: var(--text);
+}
+
+.secondaryAction {
+  border: 1px solid var(--border);
+  background: var(--glass);
+  color: var(--muted);
+}
+
+.preview {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(18, 42, 70, 0.92), rgba(8, 18, 32, 0.92));
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.previewHeader,
+.previewFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 18px;
+  color: var(--muted);
+}
+
+.previewHeader strong,
+.previewFooter strong {
+  color: var(--accent);
+}
+
+.featureGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  width: min(1180px, calc(100% - 32px));
+  margin: 24px auto 80px;
+}
+
+.feature {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 24px;
+  background: var(--panel);
+}
+
+.feature svg {
+  color: var(--accent);
+}
+
+.feature h2 {
+  margin: 16px 0 10px;
+  font-size: 1.1rem;
+}
+
+.feature p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+@media (max-width: 880px) {
+  .hero {
+    grid-template-columns: 1fr;
+    padding-top: 52px;
+  }
+
+  .featureGrid {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,0 +1,32 @@
+.legal {
+  max-width: 860px;
+  margin: 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: clamp(24px, 5vw, 46px);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.legal h1 {
+  margin: 0 0 20px;
+  font-size: clamp(2.2rem, 5vw, 4rem);
+  line-height: 1;
+}
+
+.legal h2 {
+  margin: 30px 0 10px;
+  color: var(--text);
+  font-size: 1.22rem;
+}
+
+.legal p {
+  margin: 0 0 16px;
+  color: var(--muted);
+  line-height: 1.8;
+}
+
+.legal code {
+  color: var(--accent);
+  font-family: var(--font-geist-mono), monospace;
+}
