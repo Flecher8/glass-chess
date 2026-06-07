@@ -43,6 +43,7 @@
 }
 
 .boardPanel {
+  --evaluation-bar-width: 46px;
   width: min(100%, 660px);
   justify-self: end;
   padding: 14px;
@@ -50,7 +51,7 @@
 
 .boardWithEvaluation {
   display: grid;
-  grid-template-columns: 30px minmax(0, 1fr);
+  grid-template-columns: var(--evaluation-bar-width) minmax(0, 1fr);
   gap: 10px;
   align-items: stretch;
 }
@@ -70,7 +71,7 @@
 .evaluationTrack {
   position: relative;
   display: block;
-  width: 30px;
+  width: var(--evaluation-bar-width);
   min-height: 100%;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.12);
@@ -105,13 +106,14 @@
   right: 0;
   left: 0;
   z-index: 2;
-  padding: 0 2px;
-  overflow: hidden;
-  font-size: 0.68rem;
+  padding: 0 3px;
+  overflow: visible;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.62rem;
+  font-variant-numeric: tabular-nums;
   font-weight: 900;
   line-height: 1.1;
   text-align: center;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
