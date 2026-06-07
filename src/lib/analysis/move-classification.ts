@@ -1,3 +1,5 @@
+import { Chess } from "chess.js";
+
 import type { GameMove } from "@/lib/chess/types";
 import { scoreForWhite, scoreToCentipawns } from "@/lib/engine/uci-parser";
 import type { EngineAnalysisResult } from "@/lib/engine/types";
@@ -23,13 +25,40 @@ export type MoveReview = {
   pv: string[];
 };
 
+const MATE_SCORE_CAP = 1000;
+const PIECE_VALUES: Record<GameMove["piece"], number> = {
+  p: 1,
+  n: 3,
+  b: 3,
+  r: 5,
+  q: 9,
+  k: 0
+};
+
 function scoreForPlayer(score: EngineAnalysisResult["lines"][number]["score"], fen: string, color: GameMove["color"]): number {
   const whiteScore = scoreToCentipawns(scoreForWhite(score, fen));
-  return color === "w" ? whiteScore : -whiteScore;
+  const playerScore = color === "w" ? whiteScore : -whiteScore;
+
+  return Math.max(-MATE_SCORE_CAP, Math.min(MATE_SCORE_CAP, playerScore));
 }
 
 function isSacrificeLike(move: GameMove): boolean {
-  return Boolean(move.captured) || move.piece !== "p";
+  const movedValue = PIECE_VALUES[move.piece];
+  const capturedValue = move.captured ? PIECE_VALUES[move.captured] : 0;
+
+  if (movedValue <= capturedValue) {
+    return false;
+  }
+
+  try {
+    const opponentCanTakeMovedPiece = new Chess(move.after)
+      .moves({ verbose: true })
+      .some((reply) => reply.to === move.to && reply.captured === move.piece);
+
+    return opponentCanTakeMovedPiece && movedValue - capturedValue >= 2;
+  } catch {
+    return false;
+  }
 }
 
 export function classifyMove(
@@ -55,9 +84,10 @@ export function classifyMove(
   }
 
   const loss = Math.max(0, beforeEval - afterEval);
+  const gain = Math.max(0, afterEval - beforeEval);
   const isBestMove = move.uci === bestMove;
   const missedWin = beforeEval >= 450 && afterEval < 180 && !isBestMove;
-  const brilliant = isBestMove && beforeEval >= 120 && afterEval >= beforeEval - 30 && isSacrificeLike(move);
+  const brilliant = isBestMove && isSacrificeLike(move) && beforeEval >= -80 && afterEval >= beforeEval - 25 && gain >= 60;
   const greatMove = !isBestMove && beforeEval < -120 && afterEval >= -30 && loss <= 25;
 
   let classification: MoveClassification;
@@ -68,15 +98,15 @@ export function classifyMove(
     classification = "Great Move";
   } else if (missedWin) {
     classification = "Miss";
-  } else if (isBestMove || loss <= 15) {
+  } else if (isBestMove || loss <= 2) {
     classification = "Best";
-  } else if (loss <= 35) {
+  } else if (loss <= 20) {
     classification = "Excellent";
-  } else if (loss <= 80) {
+  } else if (loss <= 50) {
     classification = "Good";
-  } else if (loss <= 150) {
+  } else if (loss <= 100) {
     classification = "Inaccuracy";
-  } else if (loss <= 300) {
+  } else if (loss <= 200) {
     classification = "Mistake";
   } else {
     classification = "Blunder";

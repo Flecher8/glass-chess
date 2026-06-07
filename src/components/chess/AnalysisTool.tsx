@@ -56,6 +56,8 @@ const samplePgn = `[Event "Sample Game"]
 
 1. e4 e5 2. Nf3 Nc6 3. Bb5 *`;
 
+type MoveDisplayLabel = MoveClassification | "Reviewing";
+
 const moveQualityMeta: Record<MoveClassification, { color: string; symbol: string; label: string }> = {
   Book: { color: "#9b6a43", symbol: "", label: "Book" },
   Best: { color: "#7fc766", symbol: "★", label: "Best" },
@@ -70,6 +72,25 @@ const moveQualityMeta: Record<MoveClassification, { color: string; symbol: strin
 };
 
 const neutralMoveMeta = { color: "#88a9c4", symbol: "", label: "Last move" };
+const reviewingMoveMeta = { color: "#88a9c4", label: "Reviewing" };
+
+function moveSignature(move: GameMove): string {
+  return `${move.ply}:${move.uci}:${move.before}:${move.after}`;
+}
+
+function retainRecordThroughPly<T>(record: Record<number, T>, ply: number): Record<number, T> {
+  return Object.fromEntries(Object.entries(record).filter(([key]) => Number(key) <= ply)) as Record<number, T>;
+}
+
+function removeRecordPly<T>(record: Record<number, T>, ply: number): Record<number, T> {
+  const next = { ...record };
+  delete next[ply];
+  return next;
+}
+
+function colorForMoveLabel(label: MoveDisplayLabel): string {
+  return label === "Reviewing" ? reviewingMoveMeta.color : moveQualityMeta[label].color;
+}
 
 function formatSettingScore(score: UciScore | undefined, fen: string, format: EngineSettings["evalFormat"] = "centipawn"): string {
   if (!score) {
@@ -180,10 +201,15 @@ export function AnalysisTool() {
   const [analysis, setAnalysis] = useState<EngineAnalysisResult | null>(null);
   const [reviews, setReviews] = useState<Record<number, MoveReview>>({});
   const [quickClassifications, setQuickClassifications] = useState<Record<number, MoveClassification>>({});
+  const [pendingMoveReviews, setPendingMoveReviews] = useState<Record<number, string>>({});
   const [reviewProgress, setReviewProgress] = useState({ active: false, current: 0, total: 0 });
   const clientRef = useRef<StockfishClient | null>(null);
+  const reviewClientRef = useRef<StockfishClient | null>(null);
   const cancelReviewRef = useRef(false);
   const autoAnalysisRef = useRef(0);
+  const automaticReviewVersionRef = useRef(0);
+  const reviewQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const gameRef = useRef(game);
   const navMenuRef = useRef<HTMLDivElement | null>(null);
 
   const currentFen = useMemo(() => fenAtPly(game), [game]);
@@ -222,9 +248,24 @@ export function AnalysisTool() {
   }, [game.moves]);
 
   const moveLabel = useCallback(
-    (ply: number) => reviews[ply]?.classification ?? quickClassifications[ply] ?? (isBookMove(game.moves, ply) ? "Book" : undefined),
-    [game.moves, quickClassifications, reviews]
+    (move: GameMove | undefined): MoveDisplayLabel | undefined => {
+      if (!move) {
+        return undefined;
+      }
+
+      return (
+        reviews[move.ply]?.classification ??
+        (pendingMoveReviews[move.ply] === moveSignature(move) ? "Reviewing" : undefined) ??
+        quickClassifications[move.ply] ??
+        (isBookMove(game.moves, move.ply) ? "Book" : undefined)
+      );
+    },
+    [game.moves, pendingMoveReviews, quickClassifications, reviews]
   );
+
+  useEffect(() => {
+    gameRef.current = game;
+  }, [game]);
 
   useEffect(() => {
     const stored = window.localStorage.getItem("glass-chess-preferences");
@@ -322,6 +363,7 @@ export function AnalysisTool() {
   useEffect(() => {
     return () => {
       clientRef.current?.dispose();
+      reviewClientRef.current?.dispose();
     };
   }, []);
 
@@ -330,6 +372,13 @@ export function AnalysisTool() {
       clientRef.current = new StockfishClient();
     }
     return clientRef.current;
+  }, []);
+
+  const getReviewClient = useCallback(() => {
+    if (!reviewClientRef.current) {
+      reviewClientRef.current = new StockfishClient();
+    }
+    return reviewClientRef.current;
   }, []);
 
   const analyzeFen = useCallback(
@@ -343,6 +392,75 @@ export function AnalysisTool() {
       return result;
     },
     [getClient]
+  );
+
+  const clearMoveQualityState = useCallback(() => {
+    automaticReviewVersionRef.current += 1;
+    reviewClientRef.current?.stop();
+    setReviews({});
+    setQuickClassifications({});
+    setPendingMoveReviews({});
+  }, []);
+
+  const queueMoveReview = useCallback(
+    (move: GameMove, movesSnapshot: GameMove[]) => {
+      if (isBookMove(movesSnapshot, move.ply)) {
+        return;
+      }
+
+      const signature = moveSignature(move);
+      const reviewVersion = automaticReviewVersionRef.current;
+      const reviewSettings: EngineSettings = {
+        ...engineAnalysisSettings,
+        multiPv: 3,
+        showBestLine: true,
+        evalFormat: "centipawn"
+      };
+
+      setPendingMoveReviews((current) => ({ ...current, [move.ply]: signature }));
+
+      const runReview = async () => {
+        if (reviewVersion !== automaticReviewVersionRef.current) {
+          return;
+        }
+
+        try {
+          const client = getReviewClient();
+          await client.init();
+          const before = await client.analyze(move.before, reviewSettings);
+
+          if (reviewVersion !== automaticReviewVersionRef.current) {
+            return;
+          }
+
+          const after = await client.analyze(move.after, reviewSettings);
+
+          if (reviewVersion !== automaticReviewVersionRef.current) {
+            return;
+          }
+
+          const activeMove = gameRef.current.moves[move.ply - 1];
+          if (!activeMove || moveSignature(activeMove) !== signature) {
+            return;
+          }
+
+          const review = classifyMove(move, before, after);
+          setReviews((current) => ({ ...current, [move.ply]: review }));
+          setQuickClassifications((current) => removeRecordPly(current, move.ply));
+          setMessage(`Move classified as ${review.classification}`);
+        } catch (error) {
+          if (!isEngineCancellation(error) && reviewVersion === automaticReviewVersionRef.current) {
+            setMessage(error instanceof Error ? error.message : "Move review failed.");
+          }
+        } finally {
+          setPendingMoveReviews((current) => (current[move.ply] === signature ? removeRecordPly(current, move.ply) : current));
+        }
+      };
+
+      reviewQueueRef.current = reviewQueueRef.current.catch(() => undefined).then(runReview);
+      void reviewQueueRef.current;
+    },
+    [engineAnalysisSettings, getReviewClient]
   );
 
   useEffect(() => {
@@ -411,7 +529,7 @@ export function AnalysisTool() {
         return classifyCandidateMove(candidateIndex);
       }
 
-      return "Inaccuracy";
+      return undefined;
     },
     [analysis, game.moves]
   );
@@ -424,6 +542,7 @@ export function AnalysisTool() {
 
       let nextGame = game;
       const labels: Record<number, MoveClassification> = {};
+      const playedMoves: GameMove[] = [];
 
       for (const uci of pv.slice(0, clickedIndex + 1)) {
         const parsed = uciToMove(uci);
@@ -438,6 +557,7 @@ export function AnalysisTool() {
 
         const playedMove = appliedGame.moves[appliedGame.currentPly - 1];
         if (playedMove) {
+          playedMoves.push(playedMove);
           labels[playedMove.ply] = isBookMove(appliedGame.moves.slice(0, playedMove.ply), playedMove.ply)
             ? "Book"
             : Object.keys(labels).length === 0
@@ -449,16 +569,19 @@ export function AnalysisTool() {
       }
 
       if (nextGame !== game) {
+        const retainedPly = game.currentPly;
         setGame(nextGame);
+        setReviews((current) => retainRecordThroughPly(current, retainedPly));
+        setPendingMoveReviews((current) => retainRecordThroughPly(current, retainedPly));
         setQuickClassifications((current) => ({
-          ...Object.fromEntries(Object.entries(current).filter(([ply]) => Number(ply) <= game.currentPly)),
+          ...retainRecordThroughPly(current, retainedPly),
           ...labels
         }));
-        setReviews({});
+        playedMoves.forEach((playedMove) => queueMoveReview(playedMove, nextGame.moves));
         setMessage("Candidate line played");
       }
     },
-    [analysis, currentFen, game]
+    [analysis, currentFen, game, queueMoveReview]
   );
 
   const handleFenLoad = () => {
@@ -467,9 +590,8 @@ export function AnalysisTool() {
       setMessage(result.error);
       return;
     }
+    clearMoveQualityState();
     setGame(setGameFromFen(result.value));
-    setReviews({});
-    setQuickClassifications({});
     setMessage("FEN loaded");
   };
 
@@ -480,9 +602,8 @@ export function AnalysisTool() {
       return;
     }
 
+    clearMoveQualityState();
     setGame(setGameFromMoves(result.value.initialFen, result.value.moves));
-    setReviews({});
-    setQuickClassifications({});
     setMessage(hasLongGameWarning(result.value.moves.length) ? "PGN loaded. Long game analysis may take time." : "PGN loaded");
   };
 
@@ -500,20 +621,28 @@ export function AnalysisTool() {
       setGame(nextGame);
       const playedMove = nextGame.moves[nextGame.currentPly - 1];
       const classification = playedMove ? classifyMoveFromCurrentCandidates(playedMove, nextGame.moves) : undefined;
+      const retainedPly = game.currentPly;
       setQuickClassifications((current) => {
-        const retained = Object.fromEntries(Object.entries(current).filter(([ply]) => Number(ply) <= game.currentPly));
+        const retained = retainRecordThroughPly(current, retainedPly);
         return playedMove && classification ? { ...retained, [playedMove.ply]: classification } : retained;
       });
-      setReviews({});
+      setReviews((current) => retainRecordThroughPly(current, retainedPly));
+      setPendingMoveReviews((current) => retainRecordThroughPly(current, retainedPly));
+      if (playedMove) {
+        queueMoveReview(playedMove, nextGame.moves);
+      }
       setMessage("Move added");
       return true;
     },
-    [classifyMoveFromCurrentCandidates, game]
+    [classifyMoveFromCurrentCandidates, game, queueMoveReview]
   );
 
   const stopAnalysis = () => {
     cancelReviewRef.current = true;
+    automaticReviewVersionRef.current += 1;
     clientRef.current?.stop();
+    reviewClientRef.current?.stop();
+    setPendingMoveReviews({});
     setReviewProgress((progress) => ({ ...progress, active: false }));
     setEngineStatus("ready");
     setMessage("Analysis stopped");
@@ -526,7 +655,11 @@ export function AnalysisTool() {
     }
 
     cancelReviewRef.current = false;
+    automaticReviewVersionRef.current += 1;
+    reviewClientRef.current?.stop();
     setReviews({});
+    setQuickClassifications({});
+    setPendingMoveReviews({});
     setReviewProgress({ active: true, current: 0, total: game.moves.length });
     setMessage("Review running");
 
@@ -747,49 +880,38 @@ export function AnalysisTool() {
                 </progress>
               ) : null}
               <ol className={styles.moveTable}>
-                {moveRows.map((row) => (
-                  <li key={row.number}>
-                    <span className={styles.moveNumber}>{row.number}.</span>
-                    <button
-                      type="button"
-                      className={row.white && row.white.ply === game.currentPly ? styles.currentMoveButton : undefined}
-                      disabled={!row.white}
-                    onClick={() => row.white && setGame(movePly(game, row.white.ply))}
-                  >
-                    {row.white?.san ?? ""}
-                    {row.white && moveLabel(row.white.ply) ? (
-                      <small
-                        style={
-                          {
-                            "--classification-color": moveQualityMeta[moveLabel(row.white.ply)].color
-                          } as CSSProperties
-                        }
+                {moveRows.map((row) => {
+                  const whiteLabel = moveLabel(row.white);
+                  const blackLabel = moveLabel(row.black);
+
+                  return (
+                    <li key={row.number}>
+                      <span className={styles.moveNumber}>{row.number}.</span>
+                      <button
+                        type="button"
+                        className={row.white && row.white.ply === game.currentPly ? styles.currentMoveButton : undefined}
+                        disabled={!row.white}
+                        onClick={() => row.white && setGame(movePly(game, row.white.ply))}
                       >
-                        {moveLabel(row.white.ply)}
-                      </small>
-                    ) : null}
-                  </button>
-                    <button
-                      type="button"
-                      className={row.black && row.black.ply === game.currentPly ? styles.currentMoveButton : undefined}
-                      disabled={!row.black}
-                    onClick={() => row.black && setGame(movePly(game, row.black.ply))}
-                  >
-                    {row.black?.san ?? ""}
-                    {row.black && moveLabel(row.black.ply) ? (
-                      <small
-                        style={
-                          {
-                            "--classification-color": moveQualityMeta[moveLabel(row.black.ply)].color
-                          } as CSSProperties
-                        }
+                        {row.white?.san ?? ""}
+                        {whiteLabel ? (
+                          <small style={{ "--classification-color": colorForMoveLabel(whiteLabel) } as CSSProperties}>{whiteLabel}</small>
+                        ) : null}
+                      </button>
+                      <button
+                        type="button"
+                        className={row.black && row.black.ply === game.currentPly ? styles.currentMoveButton : undefined}
+                        disabled={!row.black}
+                        onClick={() => row.black && setGame(movePly(game, row.black.ply))}
                       >
-                        {moveLabel(row.black.ply)}
-                      </small>
-                    ) : null}
-                  </button>
-                  </li>
-                ))}
+                        {row.black?.san ?? ""}
+                        {blackLabel ? (
+                          <small style={{ "--classification-color": colorForMoveLabel(blackLabel) } as CSSProperties}>{blackLabel}</small>
+                        ) : null}
+                      </button>
+                    </li>
+                  );
+                })}
               </ol>
             </section>
           </div>
@@ -933,9 +1055,8 @@ export function AnalysisTool() {
               <button
                 type="button"
                 onClick={() => {
+                  clearMoveQualityState();
                   setGame(createInitialGameState());
-                  setReviews({});
-                  setQuickClassifications({});
                   setMessage("Board reset");
                 }}
               >

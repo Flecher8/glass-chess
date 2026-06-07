@@ -32,6 +32,18 @@ describe("move classification", () => {
     expect(review.classification).toBe("Best");
   });
 
+  it("marks moderate losses as inaccuracies", () => {
+    const review = classifyMove(move, result("g1f3", 75), result("e7e5", 10, "8/8/8/8/8/8/8/8 b - - 0 1"));
+
+    expect(review.classification).toBe("Inaccuracy");
+  });
+
+  it("marks one-pawn losses as mistakes", () => {
+    const review = classifyMove(move, result("g1f3", 90), result("e7e5", 50, "8/8/8/8/8/8/8/8 b - - 0 1"));
+
+    expect(review.classification).toBe("Mistake");
+  });
+
   it("marks large losses as blunders", () => {
     const review = classifyMove(move, result("g1f3", 300), result("e7e5", 50, "8/8/8/8/8/8/8/8 b - - 0 1"));
 
@@ -42,5 +54,33 @@ describe("move classification", () => {
     const review = classifyMove(move, result("g1f3", 600), result("e7e5", -100, "8/8/8/8/8/8/8/8 b - - 0 1"));
 
     expect(review.classification).toBe("Miss");
+  });
+
+  it("does not mark ordinary top moves as brilliant", () => {
+    const review = classifyMove(move, result("e2e4", 0), result("e7e5", -80, "8/8/8/8/8/8/8/8 b - - 0 1"));
+
+    expect(review.classification).toBe("Best");
+  });
+
+  it("marks best sacrifice-like moves with improved evaluation as brilliant", () => {
+    const sacrificeMove: GameMove = {
+      ...move,
+      san: "Nd5",
+      lan: "f4d5",
+      uci: "f4d5",
+      from: "f4",
+      to: "d5",
+      piece: "n",
+      before: "4k3/8/2p5/8/5N2/8/8/4K3 w - - 0 1",
+      after: "4k3/8/2p5/3N4/8/8/8/4K3 b - - 1 1"
+    };
+
+    const review = classifyMove(
+      sacrificeMove,
+      result("f4d5", 0, sacrificeMove.before),
+      result("c6d5", -80, sacrificeMove.after)
+    );
+
+    expect(review.classification).toBe("Brilliant");
   });
 });
