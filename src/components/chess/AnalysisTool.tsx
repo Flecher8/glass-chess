@@ -73,6 +73,7 @@ const moveQualityMeta: Record<MoveClassification, { color: string; symbol: strin
 
 const neutralMoveMeta = { color: "#88a9c4", symbol: "", label: "Last move" };
 const reviewingMoveMeta = { color: "#88a9c4", label: "Reviewing" };
+const GAME_REVIEW_CONCURRENCY = 2;
 
 function moveSignature(move: GameMove): string {
   return `${move.ply}:${move.uci}:${move.before}:${move.after}`;
@@ -90,6 +91,27 @@ function removeRecordPly<T>(record: Record<number, T>, ply: number): Record<numb
 
 function colorForMoveLabel(label: MoveDisplayLabel): string {
   return label === "Reviewing" ? reviewingMoveMeta.color : moveQualityMeta[label].color;
+}
+
+function buildReviewDepthPasses(targetDepth: number): number[] {
+  const depth = Math.max(1, Math.floor(targetDepth));
+  const candidates = [Math.min(4, depth), Math.min(10, depth), depth];
+  return [...new Set(candidates)].sort((a, b) => a - b);
+}
+
+async function runWithConcurrency<T>(items: T[], limit: number, worker: (item: T, index: number) => Promise<void>): Promise<void> {
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(1, limit), items.length);
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        await worker(items[index], index);
+      }
+    })
+  );
 }
 
 function formatSettingScore(score: UciScore | undefined, fen: string, format: EngineSettings["evalFormat"] = "centipawn"): string {
@@ -209,6 +231,7 @@ export function AnalysisTool() {
   const cancelReviewRef = useRef(false);
   const autoAnalysisRef = useRef(0);
   const automaticReviewVersionRef = useRef(0);
+  const activeReviewDisposersRef = useRef<Set<() => void>>(new Set());
   const gameRef = useRef(game);
   const navMenuRef = useRef<HTMLDivElement | null>(null);
 
@@ -361,10 +384,14 @@ export function AnalysisTool() {
   }, [isNavMenuOpen]);
 
   useEffect(() => {
+    const activeReviewDisposers = activeReviewDisposersRef.current;
+
     return () => {
       clientRef.current?.dispose();
       reviewBeforeClientRef.current?.dispose();
       reviewAfterClientRef.current?.dispose();
+      activeReviewDisposers.forEach((dispose) => dispose());
+      activeReviewDisposers.clear();
     };
   }, []);
 
@@ -394,6 +421,8 @@ export function AnalysisTool() {
     reviewAfterClientRef.current?.dispose();
     reviewBeforeClientRef.current = null;
     reviewAfterClientRef.current = null;
+    activeReviewDisposersRef.current.forEach((dispose) => dispose());
+    activeReviewDisposersRef.current.clear();
   }, []);
 
   const analyzeFen = useCallback(
@@ -418,7 +447,12 @@ export function AnalysisTool() {
   }, [disposeReviewClients]);
 
   const reviewMoveProgressively = useCallback(
-    async (move: GameMove, movesSnapshot: GameMove[], reviewVersion: number) => {
+    async (
+      move: GameMove,
+      movesSnapshot: GameMove[],
+      reviewVersion: number,
+      options: { afterClient?: StockfishClient; beforeClient?: StockfishClient; depth?: number } = {}
+    ) => {
       if (isBookMove(movesSnapshot, move.ply)) {
         const review: MoveReview = { ply: move.ply, classification: "Book", pv: [] };
         setReviews((current) => ({ ...current, [move.ply]: review }));
@@ -428,6 +462,7 @@ export function AnalysisTool() {
       const signature = moveSignature(move);
       const reviewSettings: EngineSettings = {
         ...engineAnalysisSettings,
+        depth: options.depth ?? engineAnalysisSettings.depth,
         multiPv: 1,
         showBestLine: true,
         evalFormat: "centipawn"
@@ -483,8 +518,8 @@ export function AnalysisTool() {
       };
 
       try {
-        const beforeClient = getReviewBeforeClient();
-        const afterClient = getReviewAfterClient();
+        const beforeClient = options.beforeClient ?? getReviewBeforeClient();
+        const afterClient = options.afterClient ?? getReviewAfterClient();
         await Promise.all([beforeClient.init(), afterClient.init()]);
 
         if (!isStillActive()) {
@@ -666,23 +701,51 @@ export function AnalysisTool() {
       disposeReviewClients();
       setReviews({});
       setQuickClassifications({});
-      setPendingMoveReviews({});
-      setReviewProgress({ active: true, current: 0, total: moves.length });
+      setPendingMoveReviews(
+        Object.fromEntries(moves.filter((move) => !isBookMove(moves, move.ply)).map((move) => [move.ply, moveSignature(move)]))
+      );
+      const depthPasses = buildReviewDepthPasses(engineAnalysisSettings.depth);
+      const totalReviewSteps = moves.length * depthPasses.length;
+      let completedReviewSteps = 0;
+      setReviewProgress({ active: true, current: 0, total: totalReviewSteps });
       setMessage(startMessage);
 
       try {
-        for (const move of moves) {
+        for (const depth of depthPasses) {
           if (cancelReviewRef.current || reviewVersion !== automaticReviewVersionRef.current) {
             break;
           }
 
-          await reviewMoveProgressively(move, moves, reviewVersion);
+          setMessage(`Reviewing depth ${depth}/${engineAnalysisSettings.depth}`);
 
-          if (cancelReviewRef.current || reviewVersion !== automaticReviewVersionRef.current) {
-            break;
-          }
+          await runWithConcurrency(moves, GAME_REVIEW_CONCURRENCY, async (move) => {
+            if (cancelReviewRef.current || reviewVersion !== automaticReviewVersionRef.current) {
+              return;
+            }
 
-          setReviewProgress({ active: true, current: move.ply, total: moves.length });
+            if (isBookMove(moves, move.ply)) {
+              await reviewMoveProgressively(move, moves, reviewVersion, { depth });
+            } else {
+              const beforeClient = new StockfishClient();
+              const afterClient = new StockfishClient();
+              const disposeClients = () => {
+                beforeClient.dispose();
+                afterClient.dispose();
+              };
+
+              activeReviewDisposersRef.current.add(disposeClients);
+
+              try {
+                await reviewMoveProgressively(move, moves, reviewVersion, { afterClient, beforeClient, depth });
+              } finally {
+                activeReviewDisposersRef.current.delete(disposeClients);
+                disposeClients();
+              }
+            }
+
+            completedReviewSteps += 1;
+            setReviewProgress({ active: true, current: completedReviewSteps, total: totalReviewSteps });
+          });
         }
 
         if (reviewVersion === automaticReviewVersionRef.current) {
@@ -697,7 +760,7 @@ export function AnalysisTool() {
         }
       }
     },
-    [disposeReviewClients, reviewMoveProgressively]
+    [disposeReviewClients, engineAnalysisSettings.depth, reviewMoveProgressively]
   );
 
   const handleFenLoad = () => {
