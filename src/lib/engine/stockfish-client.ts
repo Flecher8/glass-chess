@@ -6,6 +6,7 @@ const LITE_ENGINE_PATH = "/vendor/stockfish/18/stockfish-18-lite-single.js";
 type PendingAnalysis = {
   fen: string;
   lines: Map<number, EngineLine>;
+  minimumLineCount: number;
   onUpdate?: (result: EngineAnalysisResult) => void;
   publishedDepth: number;
   targetMultiPv: number;
@@ -14,6 +15,8 @@ type PendingAnalysis = {
 };
 
 type AnalyzeOptions = {
+  minimumLineCount?: number;
+  multiPv?: number;
   onUpdate?: (result: EngineAnalysisResult) => void;
 };
 
@@ -58,11 +61,16 @@ export class StockfishClient {
     }
 
     return new Promise((resolve, reject) => {
-      const targetMultiPv = Math.max(3, settings.multiPv);
+      const targetMultiPv = Math.max(1, Math.floor(options.multiPv ?? Math.max(3, settings.multiPv)));
+      const minimumLineCount = Math.max(
+        1,
+        Math.min(targetMultiPv, Math.floor(options.minimumLineCount ?? Math.min(3, targetMultiPv)))
+      );
 
       this.pendingAnalysis = {
         fen,
         lines: new Map(),
+        minimumLineCount,
         onUpdate: options.onUpdate,
         publishedDepth: 0,
         targetMultiPv,
@@ -185,7 +193,7 @@ export class StockfishClient {
       .sort((a, b) => a.multiPv - b.multiPv)
       .slice(0, 3);
 
-    if (lines.length < Math.min(3, pending.targetMultiPv)) {
+    if (lines.length < pending.minimumLineCount) {
       return;
     }
 
