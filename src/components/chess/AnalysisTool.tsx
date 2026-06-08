@@ -1,6 +1,6 @@
 "use client";
 
-import { Chess } from "chess.js";
+import { Chess, SQUARES } from "chess.js";
 import clsx from "clsx";
 import {
   BarChart3,
@@ -20,7 +20,7 @@ import {
   X
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { Chessboard, type PieceDropHandlerArgs, type SquareRenderer } from "react-chessboard";
+import { Chessboard, type PieceDropHandlerArgs, type SquareHandlerArgs, type SquareRenderer } from "react-chessboard";
 
 import { classifyMove, type MoveClassification, type MoveReview } from "@/lib/analysis/move-classification";
 import {
@@ -59,6 +59,13 @@ const defaultSettings: EngineSettings = {
 };
 
 const PREFERENCES_VERSION = 2;
+const chessSquareSet = new Set<string>(SQUARES);
+
+type ChessSquare = (typeof SQUARES)[number];
+
+function toChessSquare(square: string | null | undefined): ChessSquare | null {
+  return square && chessSquareSet.has(square) ? (square as ChessSquare) : null;
+}
 
 const samplePgn = `[Event "Sample Game"]
 [White "White"]
@@ -274,6 +281,8 @@ export function AnalysisTool({ mode = "analysis" }: AnalysisToolProps) {
   const [message, setMessage] = useState("Ready");
   const [orientation, setOrientation] = useState<BoardOrientation>("white");
   const [settings, setSettings] = useState<EngineSettings>(defaultSettings);
+  const [showLegalMoveHints, setShowLegalMoveHints] = useState(true);
+  const [selectedSquare, setSelectedSquare] = useState<{ fen: string; square: ChessSquare } | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isNavMenuOpen, setIsNavMenuOpen] = useState(false);
   const [engineStatus, setEngineStatus] = useState<EngineStatus>("idle");
@@ -295,6 +304,18 @@ export function AnalysisTool({ mode = "analysis" }: AnalysisToolProps) {
 
   const currentFen = useMemo(() => fenAtPly(game), [game]);
   const currentChess = useMemo(() => chessAtPly(game), [game]);
+  const selectedSquareForPosition = selectedSquare?.fen === currentFen ? selectedSquare.square : null;
+  const legalTargetSquares = useMemo(() => {
+    if (!selectedSquareForPosition) {
+      return new Set<ChessSquare>();
+    }
+
+    try {
+      return new Set(currentChess.moves({ square: selectedSquareForPosition, verbose: true }).map((move) => move.to));
+    } catch {
+      return new Set<ChessSquare>();
+    }
+  }, [currentChess, selectedSquareForPosition]);
   const currentMove = game.currentPly > 0 ? game.moves[game.currentPly - 1] : null;
   const currentOpening = useMemo(() => findOpening(game.moves.slice(0, game.currentPly)), [game.currentPly, game.moves]);
   const currentMoveClassification = currentMove
@@ -375,6 +396,7 @@ export function AnalysisTool({ mode = "analysis" }: AnalysisToolProps) {
         version: number;
         orientation: BoardOrientation;
         settings: EngineSettings;
+        showLegalMoveHints: boolean;
       }>;
       if (preferences.version !== PREFERENCES_VERSION) {
         window.localStorage.removeItem("glass-chess-preferences");
@@ -386,6 +408,9 @@ export function AnalysisTool({ mode = "analysis" }: AnalysisToolProps) {
         }
         if (preferences.settings) {
           setSettings((current) => ({ ...current, ...preferences.settings, mode: "lite", multiPv: 3 }));
+        }
+        if (typeof preferences.showLegalMoveHints === "boolean") {
+          setShowLegalMoveHints(preferences.showLegalMoveHints);
         }
       }, 0);
     } catch {
@@ -399,10 +424,11 @@ export function AnalysisTool({ mode = "analysis" }: AnalysisToolProps) {
       JSON.stringify({
         version: PREFERENCES_VERSION,
         orientation,
-        settings
+        settings,
+        showLegalMoveHints
       })
     );
-  }, [orientation, settings]);
+  }, [orientation, settings, showLegalMoveHints]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -949,12 +975,8 @@ export function AnalysisTool({ mode = "analysis" }: AnalysisToolProps) {
     loadPgnText(pgnInput);
   };
 
-  const handleDrop = useCallback(
-    ({ sourceSquare, targetSquare }: PieceDropHandlerArgs) => {
-      if (!targetSquare) {
-        return false;
-      }
-
+  const applyBoardMove = useCallback(
+    (sourceSquare: string, targetSquare: string) => {
       const nextGame = applyManualMove(game, sourceSquare, targetSquare);
       if (!nextGame) {
         return false;
@@ -988,9 +1010,59 @@ export function AnalysisTool({ mode = "analysis" }: AnalysisToolProps) {
         );
       }
       setMessage("Move added");
+      setSelectedSquare(null);
       return true;
     },
     [classifyMoveFromCurrentCandidates, game, practiceSession, queueMoveReview]
+  );
+
+  const handleDrop = useCallback(
+    ({ sourceSquare, targetSquare }: PieceDropHandlerArgs) => {
+      if (!targetSquare) {
+        return false;
+      }
+
+      return applyBoardMove(sourceSquare, targetSquare);
+    },
+    [applyBoardMove]
+  );
+
+  const handleSquareClick = useCallback(
+    ({ piece, square }: SquareHandlerArgs) => {
+      const clickedSquare = toChessSquare(square);
+      if (!clickedSquare) {
+        setSelectedSquare(null);
+        return;
+      }
+
+      if (selectedSquareForPosition) {
+        if (clickedSquare === selectedSquareForPosition) {
+          setSelectedSquare(null);
+          return;
+        }
+
+        if (legalTargetSquares.has(clickedSquare)) {
+          applyBoardMove(selectedSquareForPosition, clickedSquare);
+          return;
+        }
+
+        setSelectedSquare(null);
+        return;
+      }
+
+      if (!piece) {
+        return;
+      }
+
+      const selectedPiece = currentChess.get(clickedSquare);
+      if (!selectedPiece || selectedPiece.color !== currentChess.turn()) {
+        return;
+      }
+
+      const hasLegalMoves = currentChess.moves({ square: clickedSquare, verbose: true }).length > 0;
+      setSelectedSquare(hasLegalMoves ? { fen: currentFen, square: clickedSquare } : null);
+    },
+    [applyBoardMove, currentChess, currentFen, legalTargetSquares, selectedSquareForPosition]
   );
 
   const stopAnalysis = () => {
@@ -1010,16 +1082,28 @@ export function AnalysisTool({ mode = "analysis" }: AnalysisToolProps) {
 
   const squareRenderer = useCallback<SquareRenderer>(
     ({ square, children }) => {
+      const renderedSquare = toChessSquare(square);
       const isLastMoveSquare = Boolean(currentMove && (currentMove.from === square || currentMove.to === square));
       const isDestinationSquare = Boolean(currentMove && currentMove.to === square);
+      const isSelectedSquare = Boolean(renderedSquare && renderedSquare === selectedSquareForPosition);
+      const showLegalTarget = Boolean(renderedSquare && legalTargetSquares.has(renderedSquare) && showLegalMoveHints);
 
       return (
         <div
-          className={clsx(styles.boardSquare, isLastMoveSquare && styles.lastMoveSquare, isDestinationSquare && styles.lastMoveDestination)}
+          className={clsx(
+            styles.boardSquare,
+            isLastMoveSquare && styles.lastMoveSquare,
+            isDestinationSquare && styles.lastMoveDestination,
+            isSelectedSquare && styles.selectedMoveSquare,
+            showLegalTarget && styles.legalTargetSquare
+          )}
+          data-selected-square={isSelectedSquare ? "true" : undefined}
+          data-legal-move-target={showLegalTarget ? "true" : undefined}
           style={{ "--last-move-color": currentMoveMeta.color } as CSSProperties}
         >
           {isLastMoveSquare ? <span className={styles.lastMoveWash} aria-hidden="true" /> : null}
           {children}
+          {showLegalTarget ? <span className={styles.legalMoveDot} aria-hidden="true" /> : null}
           {isDestinationSquare && currentMoveClassification ? (
             <span
               className={clsx(styles.moveQualityBadge, currentMoveClassification === "Book" && styles.bookMoveQualityBadge)}
@@ -1031,7 +1115,16 @@ export function AnalysisTool({ mode = "analysis" }: AnalysisToolProps) {
         </div>
       );
     },
-    [currentMove, currentMoveClassification, currentMoveMeta.color, currentMoveMeta.label, currentMoveMeta.symbol]
+    [
+      currentMove,
+      currentMoveClassification,
+      currentMoveMeta.color,
+      currentMoveMeta.label,
+      currentMoveMeta.symbol,
+      legalTargetSquares,
+      selectedSquareForPosition,
+      showLegalMoveHints
+    ]
   );
 
   const boardOptions = useMemo(
@@ -1043,6 +1136,7 @@ export function AnalysisTool({ mode = "analysis" }: AnalysisToolProps) {
       animationDurationInMs: 120,
       allowDrawingArrows: true,
       onPieceDrop: handleDrop,
+      onSquareClick: handleSquareClick,
       squareRenderer,
       boardStyle: {
         borderRadius: "8px",
@@ -1053,7 +1147,7 @@ export function AnalysisTool({ mode = "analysis" }: AnalysisToolProps) {
       darkSquareStyle: { backgroundColor: "#395f63" },
       dropSquareStyle: { boxShadow: "inset 0 0 0 4px rgba(126, 231, 184, 0.55)" }
     }),
-    [currentFen, handleDrop, orientation, squareRenderer]
+    [currentFen, handleDrop, handleSquareClick, orientation, squareRenderer]
   );
 
   return (
@@ -1552,6 +1646,10 @@ export function AnalysisTool({ mode = "analysis" }: AnalysisToolProps) {
                 onChange={(event) => setSettings({ ...settings, showBestLine: event.target.checked })}
               />
               Show best line
+            </label>
+            <label className={styles.checkbox}>
+              <input type="checkbox" checked={showLegalMoveHints} onChange={(event) => setShowLegalMoveHints(event.target.checked)} />
+              Show legal move dots
             </label>
             <label>
               Board orientation

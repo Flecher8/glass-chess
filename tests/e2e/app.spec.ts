@@ -43,6 +43,33 @@ test("analysis board exposes evaluation bar and navigation menu", async ({ page 
     .toBe("black");
 });
 
+test("analysis board supports click move targets and hidden legal dots", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium", "Board click behavior is a desktop interaction.");
+
+  await page.goto("/analysis");
+
+  const currentFen = page.getByLabel("Current FEN");
+
+  await page.locator("#glass-chess-board-square-e2").click();
+  await expect(page.locator('[data-selected-square="true"]')).toHaveCount(1);
+  await expect(page.locator('[data-legal-move-target="true"]')).toHaveCount(2);
+
+  await page.locator("#glass-chess-board-square-e4").click();
+  await expect(currentFen).toContainText("4P3");
+  await expect(page.locator('[data-selected-square="true"]')).toHaveCount(0);
+
+  await page.getByLabel("Open Stockfish settings").click();
+  await page.getByLabel("Show legal move dots").uncheck();
+  await page.getByLabel("Close Stockfish settings").click();
+
+  await page.locator("#glass-chess-board-square-g8").click();
+  await expect(page.locator('[data-selected-square="true"]')).toHaveCount(1);
+  await expect(page.locator('[data-legal-move-target="true"]')).toHaveCount(0);
+
+  await page.locator("#glass-chess-board-square-f6").click();
+  await expect(page.locator('ol[class*="moveTable"] button', { hasText: "Nf6" })).toBeVisible();
+});
+
 test("desktop arrow keys navigate loaded game moves", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "Keyboard navigation is a desktop interaction.");
 
