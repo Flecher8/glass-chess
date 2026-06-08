@@ -19,7 +19,8 @@
     "next": "16.2.7",
     "react": "19.2.7",
     "react-chessboard": "5.10.0",
-    "react-dom": "19.2.7"
+    "react-dom": "19.2.7",
+    "three": "^0.184.0"
   },
   "devDependencies": {
     "@playwright/test": "1.60.0",
@@ -28,6 +29,7 @@
     "@types/node": "25.9.1",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
+    "@types/three": "^0.184.1",
     "eslint": "^9.39.4",
     "eslint-config-next": "16.2.7",
     "happy-dom": "20.10.1",

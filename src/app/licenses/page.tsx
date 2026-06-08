@@ -32,8 +32,16 @@ export default function LicensesPage() {
 
         <h2>Application dependencies</h2>
         <p>
-          The MVP uses Next.js, React, chess.js, react-chessboard, lucide-react, and clsx. Their license details are
+          The MVP uses Next.js, React, chess.js, react-chessboard, lucide-react, clsx, and Three.js. Three.js is used
+          for the home page visual scene and is distributed under the MIT license. Dependency license details are
           tracked in the package metadata and should be reviewed before production release.
+        </p>
+
+        <h2>Visual assets</h2>
+        <p>
+          The home page 3D chess-piece models are based on the OpenGameArt asset <q>3d chess pieces</q> by tunakron,
+          published under the CC0 public domain dedication. The models are used as static browser assets for the
+          decorative home page scene.
         </p>
       </article>
     </main>
