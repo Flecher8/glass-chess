@@ -8,18 +8,29 @@ import {
   ChevronsLeft,
   ChevronsRight,
   FlipHorizontal,
+  Lightbulb,
   MoreVertical,
   RotateCcw,
   Settings,
   Square,
   StepBack,
   StepForward,
+  Target,
+  Trophy,
   X
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Chessboard, type PieceDropHandlerArgs, type SquareRenderer } from "react-chessboard";
 
 import { classifyMove, type MoveClassification, type MoveReview } from "@/lib/analysis/move-classification";
+import {
+  buildCriticalMoments,
+  buildPuzzleCandidates,
+  buildRetryTargets,
+  buildReviewSummary,
+  explainReviewedMove,
+  type PracticeTarget
+} from "@/lib/analysis/review-insights";
 import { STARTING_FEN, loadFen } from "@/lib/chess/fen";
 import {
   applyManualMove,
@@ -56,7 +67,26 @@ const samplePgn = `[Event "Sample Game"]
 
 1. e4 e5 2. Nf3 Nc6 3. Bb5 *`;
 
+const sampleFen = "r1bqkbnr/1ppp1ppp/p1n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4";
+
 type MoveDisplayLabel = MoveClassification | "Reviewing";
+
+type PracticeSession = {
+  source: "retry" | "puzzle";
+  ply: number;
+  san: string;
+  classification: MoveClassification;
+  bestMove?: string;
+  bestMoveSan?: string;
+  revealed: boolean;
+  feedback?: string;
+};
+
+type AnalysisToolMode = "analysis" | "review";
+
+type AnalysisToolProps = {
+  mode?: AnalysisToolMode;
+};
 
 const moveQualityMeta: Record<MoveClassification, { color: string; symbol: string; label: string }> = {
   Book: { color: "#9b6a43", symbol: "", label: "Book" },
@@ -74,6 +104,7 @@ const moveQualityMeta: Record<MoveClassification, { color: string; symbol: strin
 const neutralMoveMeta = { color: "#88a9c4", symbol: "", label: "Last move" };
 const reviewingMoveMeta = { color: "#88a9c4", label: "Reviewing" };
 const GAME_REVIEW_CONCURRENCY = 2;
+const SUMMARY_LABELS: MoveClassification[] = ["Best", "Excellent", "Good", "Inaccuracy", "Mistake", "Blunder", "Miss", "Great Move", "Brilliant"];
 
 function moveSignature(move: GameMove): string {
   return `${move.ply}:${move.uci}:${move.before}:${move.after}`;
@@ -154,6 +185,23 @@ function buildPvDisplayMoves(fen: string, pv: string[]): PvDisplayMove[] {
   return moves;
 }
 
+function bestMoveToSan(fen: string, bestMove: string | undefined): string | undefined {
+  if (!bestMove) {
+    return undefined;
+  }
+
+  const parsed = uciToMove(bestMove);
+  if (!parsed) {
+    return bestMove;
+  }
+
+  try {
+    return new Chess(fen).move(parsed)?.san ?? bestMove;
+  } catch {
+    return bestMove;
+  }
+}
+
 function classifyCandidateMove(candidateIndex: number): MoveClassification {
   if (candidateIndex === 0) {
     return "Best";
@@ -210,7 +258,16 @@ function buildEvaluationBar(score: UciScore | undefined, fen: string) {
   };
 }
 
-export function AnalysisTool() {
+function formatPawnSwing(value: number | undefined): string {
+  if (value === undefined) {
+    return "-";
+  }
+
+  return `${(value / 100).toFixed(1)}`;
+}
+
+export function AnalysisTool({ mode = "analysis" }: AnalysisToolProps) {
+  const showReviewTools = mode === "review";
   const [game, setGame] = useState(createInitialGameState);
   const [fenInput, setFenInput] = useState(STARTING_FEN);
   const [pgnInput, setPgnInput] = useState(samplePgn);
@@ -225,6 +282,7 @@ export function AnalysisTool() {
   const [quickClassifications, setQuickClassifications] = useState<Record<number, MoveClassification>>({});
   const [pendingMoveReviews, setPendingMoveReviews] = useState<Record<number, string>>({});
   const [reviewProgress, setReviewProgress] = useState({ active: false, current: 0, total: 0 });
+  const [practiceSession, setPracticeSession] = useState<PracticeSession | null>(null);
   const clientRef = useRef<StockfishClient | null>(null);
   const reviewBeforeClientRef = useRef<StockfishClient | null>(null);
   const reviewAfterClientRef = useRef<StockfishClient | null>(null);
@@ -242,6 +300,7 @@ export function AnalysisTool() {
   const currentMoveClassification = currentMove
     ? (reviews[currentMove.ply]?.classification ?? quickClassifications[currentMove.ply] ?? (isBookMove(game.moves, currentMove.ply) ? "Book" : undefined))
     : undefined;
+  const currentMoveReview = currentMove ? reviews[currentMove.ply] : undefined;
   const currentMoveMeta = currentMoveClassification ? moveQualityMeta[currentMoveClassification] : neutralMoveMeta;
   const activeAnalysis = analysis?.fen === currentFen ? analysis : null;
   const currentLine = activeAnalysis?.lines[0];
@@ -251,6 +310,21 @@ export function AnalysisTool() {
   const analyzedDepth = currentLine?.depth ?? 0;
   const depthLabel = analyzedDepth > 0 ? `Depth ${analyzedDepth}/${settings.depth}` : `Depth ${settings.depth}`;
   const evaluationBar = useMemo(() => buildEvaluationBar(currentLine?.score, currentFen), [currentFen, currentLine?.score]);
+  const topLineMoves = useMemo(() => (currentLine ? buildPvDisplayMoves(currentFen, currentLine.pv) : []), [currentFen, currentLine]);
+  const legalCandidateCount = useMemo(() => Math.min(3, currentChess.moves().length), [currentChess]);
+  const engineBusy = engineStatus === "loading" || engineStatus === "analyzing" || reviewProgress.active;
+  const emptyAnalysisState = !showReviewTools && game.moves.length === 0 && currentFen === STARTING_FEN;
+  const reviewSummary = useMemo(() => buildReviewSummary(game.moves, reviews), [game.moves, reviews]);
+  const criticalMoments = useMemo(() => buildCriticalMoments(game.moves, reviews), [game.moves, reviews]);
+  const retryTargets = useMemo(() => buildRetryTargets(game.moves, reviews), [game.moves, reviews]);
+  const puzzleCandidates = useMemo(() => buildPuzzleCandidates(game.moves, reviews), [game.moves, reviews]);
+  const currentMoveExplanation = useMemo(() => {
+    if (!currentMove || !currentMoveReview) {
+      return null;
+    }
+
+    return explainReviewedMove(currentMove, currentMoveReview, bestMoveToSan(currentMove.before, currentMoveReview.bestMove));
+  }, [currentMove, currentMoveReview]);
   const engineAnalysisSettings = useMemo<EngineSettings>(
     () => ({
       mode: settings.mode,
@@ -444,6 +518,7 @@ export function AnalysisTool() {
     setReviews({});
     setQuickClassifications({});
     setPendingMoveReviews({});
+    setPracticeSession(null);
   }, [disposeReviewClients]);
 
   const reviewMoveProgressively = useCallback(
@@ -688,6 +763,65 @@ export function AnalysisTool() {
     [analysis, currentFen, game, queueMoveReview]
   );
 
+  const startPracticeTarget = useCallback(
+    (target: PracticeTarget, source: PracticeSession["source"]) => {
+      const originalMove = game.moves[target.ply - 1];
+      if (!originalMove) {
+        return;
+      }
+
+      setPracticeSession({
+        source,
+        ply: target.ply,
+        san: target.san,
+        classification: target.classification,
+        bestMove: target.bestMove,
+        bestMoveSan: bestMoveToSan(originalMove.before, target.bestMove),
+        revealed: false
+      });
+      setGame(movePly(game, target.ply - 1));
+      setMessage(source === "puzzle" ? "Puzzle position loaded" : "Retry position loaded");
+    },
+    [game]
+  );
+
+  const revealPracticeMove = useCallback(() => {
+    setPracticeSession((current) => (current ? { ...current, revealed: true, feedback: "Suggestion revealed." } : current));
+  }, []);
+
+  const playPracticeSuggestion = useCallback(() => {
+    if (!practiceSession?.bestMove) {
+      return;
+    }
+
+    const parsed = uciToMove(practiceSession.bestMove);
+    if (!parsed) {
+      return;
+    }
+
+    const baseGame = movePly(game, practiceSession.ply - 1);
+    const nextGame = applyManualMove(baseGame, parsed.from, parsed.to, parsed.promotion ?? "q");
+    if (!nextGame) {
+      return;
+    }
+
+    const playedMove = nextGame.moves[nextGame.currentPly - 1];
+    const retainedPly = practiceSession.ply - 1;
+    gameRef.current = nextGame;
+    setGame(nextGame);
+    setReviews((current) => retainRecordThroughPly(current, retainedPly));
+    setPendingMoveReviews((current) => retainRecordThroughPly(current, retainedPly));
+    setQuickClassifications((current) => ({
+      ...retainRecordThroughPly(current, retainedPly),
+      ...(playedMove ? { [playedMove.ply]: "Best" as MoveClassification } : {})
+    }));
+    if (playedMove) {
+      queueMoveReview(playedMove, nextGame.moves);
+    }
+    setPracticeSession((current) => (current ? { ...current, revealed: true, feedback: "Suggested move played on the board." } : current));
+    setMessage("Practice suggestion played");
+  }, [game, practiceSession, queueMoveReview]);
+
   const reviewMovesProgressively = useCallback(
     async (moves: GameMove[], startMessage = "Review running") => {
       if (moves.length === 0) {
@@ -763,40 +897,56 @@ export function AnalysisTool() {
     [disposeReviewClients, engineAnalysisSettings.depth, reviewMoveProgressively]
   );
 
+  const loadFenText = useCallback(
+    (value: string, successMessage = "FEN loaded") => {
+      const result = loadFen(value);
+      if (!result.ok) {
+        setMessage(result.error);
+        return;
+      }
+      clearMoveQualityState();
+      const nextGame = setGameFromFen(result.value);
+      gameRef.current = nextGame;
+      setFenInput(value);
+      setGame(nextGame);
+      setMessage(successMessage);
+    },
+    [clearMoveQualityState]
+  );
+
+  const loadPgnText = useCallback(
+    (value: string, successMessage = "PGN loaded") => {
+      const result = parsePgn(value);
+      if (!result.ok) {
+        setMessage(result.error);
+        return;
+      }
+
+      clearMoveQualityState();
+      const nextGame = setGameFromMoves(result.value.initialFen, result.value.moves);
+      gameRef.current = nextGame;
+      setPgnInput(value);
+      setGame(nextGame);
+
+      if (nextGame.moves.length > 0) {
+        void reviewMovesProgressively(
+          nextGame.moves,
+          hasLongGameWarning(nextGame.moves.length) ? `${successMessage}. Reviewing moves; long game may take time.` : `${successMessage}. Reviewing moves.`
+        );
+        return;
+      }
+
+      setMessage(successMessage);
+    },
+    [clearMoveQualityState, reviewMovesProgressively]
+  );
+
   const handleFenLoad = () => {
-    const result = loadFen(fenInput);
-    if (!result.ok) {
-      setMessage(result.error);
-      return;
-    }
-    clearMoveQualityState();
-    const nextGame = setGameFromFen(result.value);
-    gameRef.current = nextGame;
-    setGame(nextGame);
-    setMessage("FEN loaded");
+    loadFenText(fenInput);
   };
 
   const handlePgnLoad = () => {
-    const result = parsePgn(pgnInput);
-    if (!result.ok) {
-      setMessage(result.error);
-      return;
-    }
-
-    clearMoveQualityState();
-    const nextGame = setGameFromMoves(result.value.initialFen, result.value.moves);
-    gameRef.current = nextGame;
-    setGame(nextGame);
-
-    if (nextGame.moves.length > 0) {
-      void reviewMovesProgressively(
-        nextGame.moves,
-        hasLongGameWarning(nextGame.moves.length) ? "PGN loaded. Reviewing moves; long game may take time." : "PGN loaded. Reviewing moves."
-      );
-      return;
-    }
-
-    setMessage("PGN loaded");
+    loadPgnText(pgnInput);
   };
 
   const handleDrop = useCallback(
@@ -824,10 +974,23 @@ export function AnalysisTool() {
       if (playedMove) {
         queueMoveReview(playedMove, nextGame.moves);
       }
+      if (playedMove && practiceSession && game.currentPly === practiceSession.ply - 1) {
+        const isSuggestedMove = Boolean(practiceSession.bestMove && playedMove.uci === practiceSession.bestMove);
+        const isStrongCandidate = classification === "Best" || classification === "Excellent";
+        setPracticeSession((current) =>
+          current && current.ply === practiceSession.ply
+            ? {
+                ...current,
+                revealed: current.revealed || isSuggestedMove,
+                feedback: isSuggestedMove || isStrongCandidate ? "Strong improvement found." : "Legal move added. Compare it with the suggestion or try another line."
+              }
+            : current
+        );
+      }
       setMessage("Move added");
       return true;
     },
-    [classifyMoveFromCurrentCandidates, game, queueMoveReview]
+    [classifyMoveFromCurrentCandidates, game, practiceSession, queueMoveReview]
   );
 
   const stopAnalysis = () => {
@@ -897,8 +1060,8 @@ export function AnalysisTool() {
     <section className={styles.workspace}>
       <div className={styles.header}>
         <div>
-          <p className="eyebrow">Analysis workspace</p>
-          <h1>Analyze positions and games locally</h1>
+          <p className="eyebrow">{showReviewTools ? "Review workspace" : "Analysis workspace"}</p>
+          <h1>{showReviewTools ? "Review games and practice mistakes" : "Analyze positions and games locally"}</h1>
         </div>
         <p className={styles.srStatus} aria-live="polite">
           {engineStatus}. {message}
@@ -935,7 +1098,7 @@ export function AnalysisTool() {
         <aside className={styles.sidePanel}>
           <div className={styles.analysisTabs} role="tablist" aria-label="Analysis panel tabs">
             <button type="button" className={styles.activeTab} role="tab" aria-selected="true">
-              Analysis
+              {showReviewTools ? "Review" : "Analysis"}
             </button>
             <button type="button" role="tab" aria-selected="false" disabled>
               Coach
@@ -958,6 +1121,26 @@ export function AnalysisTool() {
             <span>{currentOpening ? currentOpening.eco : "Opening"}</span>
             <strong>{currentOpening ? currentOpening.name : game.currentPly === 0 ? "Starting position" : "Out of book"}</strong>
           </section>
+          <section className={styles.engineProgressPanel} aria-label="Engine progress">
+            <div>
+              <span>{reviewProgress.active ? "Review progress" : "Engine progress"}</span>
+              <strong>
+                {reviewProgress.active
+                  ? `Reviewing ${reviewProgress.current} of ${reviewProgress.total}`
+                  : engineBusy
+                    ? `${message}`
+                    : "Ready for the current position"}
+              </strong>
+            </div>
+            <div>
+              <span>Top move</span>
+              <strong>{topLineMoves[0]?.san ?? (engineBusy ? "Calculating" : "Waiting")}</strong>
+            </div>
+            <button type="button" onClick={stopAnalysis} disabled={!engineBusy}>
+              <Square size={14} aria-hidden="true" />
+              Stop
+            </button>
+          </section>
 
           <div className={styles.analysisScroll}>
             <section className={styles.candidatePanel} aria-label="Best candidate moves">
@@ -966,13 +1149,20 @@ export function AnalysisTool() {
                   const line = candidateLines[candidateIndex];
 
                   if (!line) {
+                    const hasLegalMoveSlot = candidateIndex < legalCandidateCount;
                     return (
                       <li key={`candidate-placeholder-${candidateIndex}`} className={styles.emptyCandidate}>
                         <div className={styles.candidatePrimary}>
-                          <span>{engineStatus === "loading" || engineStatus === "analyzing" ? "Calculating" : "Waiting"}</span>
+                          <span>
+                            {hasLegalMoveSlot
+                              ? engineStatus === "loading" || engineStatus === "analyzing"
+                                ? "Calculating"
+                                : "Waiting"
+                              : "No legal move"}
+                          </span>
                           <strong>-</strong>
                         </div>
-                        {settings.showBestLine ? <p>Best move line will appear here.</p> : null}
+                        {settings.showBestLine ? <p>{hasLegalMoveSlot ? "Best move line will appear here." : "This position has fewer candidate moves."}</p> : null}
                       </li>
                     );
                   }
@@ -1014,6 +1204,180 @@ export function AnalysisTool() {
                 })}
               </ol>
             </section>
+
+            {emptyAnalysisState ? (
+              <section className={styles.emptyStartPanel} aria-label="Start analysis options">
+                <div>
+                  <span>Start with a position</span>
+                  <h2>Load a game, set a FEN, or play from the board.</h2>
+                  <p>The board analyzes automatically as soon as a position changes.</p>
+                </div>
+                <div className={styles.emptyStartActions}>
+                  <button type="button" onClick={() => loadPgnText(samplePgn, "Sample PGN loaded")}>
+                    Load sample game
+                  </button>
+                  <button type="button" onClick={() => loadFenText(sampleFen, "Sample position loaded")}>
+                    Load sample FEN
+                  </button>
+                </div>
+              </section>
+            ) : null}
+
+            {showReviewTools ? (
+              <>
+                <section className={styles.reviewDashboard} aria-label="Review summary dashboard">
+                  <div className={styles.sectionTitle}>
+                    <span>
+                      <BarChart3 size={16} aria-hidden="true" />
+                      Review summary
+                    </span>
+                    <strong>{reviewSummary.reviewedCount > 0 ? `${reviewSummary.reviewedCount} moves` : "Waiting"}</strong>
+                  </div>
+                  <div className={styles.summaryGrid}>
+                    <article>
+                      <span>Accuracy</span>
+                      <strong>{reviewSummary.accuracy === null ? "-" : `${reviewSummary.accuracy}%`}</strong>
+                    </article>
+                    <article>
+                      <span>Strongest</span>
+                      <strong>{reviewSummary.strongestMove ? `${reviewSummary.strongestMove.san}` : "-"}</strong>
+                    </article>
+                    <article>
+                      <span>Weakest</span>
+                      <strong>{reviewSummary.weakestMove ? `${reviewSummary.weakestMove.san}` : "-"}</strong>
+                    </article>
+                  </div>
+                  <div className={styles.phaseGrid} aria-label="Game phase issue summary">
+                    {Object.entries(reviewSummary.phases).map(([phase, stats]) => (
+                      <span key={phase}>
+                        {phase}: {stats.issues}/{stats.reviewed}
+                      </span>
+                    ))}
+                  </div>
+                  <div className={styles.qualityChips} aria-label="Move quality counts">
+                    {SUMMARY_LABELS.filter((label) => reviewSummary.counts[label]).map((label) => (
+                      <span key={label} style={{ "--classification-color": colorForMoveLabel(label) } as CSSProperties}>
+                        {label} {reviewSummary.counts[label]}
+                      </span>
+                    ))}
+                    {reviewSummary.reviewedCount === 0 ? <span>Load a PGN or make moves to build a review.</span> : null}
+                  </div>
+                </section>
+
+                <section className={styles.insightPanel} aria-label="Selected move explanation">
+                  <div className={styles.sectionTitle}>
+                    <span>
+                      <Lightbulb size={16} aria-hidden="true" />
+                      Move insight
+                    </span>
+                    <strong>{currentMove ? currentMove.san : "Start"}</strong>
+                  </div>
+                  {currentMoveExplanation ? (
+                    <>
+                      <h2>{currentMoveExplanation.title}</h2>
+                      <p>{currentMoveExplanation.detail}</p>
+                      {currentMoveExplanation.bestMove ? <span className={styles.bestMoveHint}>Engine idea: {currentMoveExplanation.bestMove}</span> : null}
+                    </>
+                  ) : (
+                    <p>Select a reviewed move to see a local explanation.</p>
+                  )}
+                </section>
+
+                <section className={styles.practicePanel} aria-label="Mistake retry and puzzle practice">
+                  <div className={styles.sectionTitle}>
+                    <span>
+                      <Target size={16} aria-hidden="true" />
+                      Practice
+                    </span>
+                    <strong>
+                      {retryTargets.length} retry / {puzzleCandidates.length} puzzle
+                    </strong>
+                  </div>
+                  <div className={styles.practiceActions}>
+                    <button type="button" disabled={retryTargets.length === 0} onClick={() => retryTargets[0] && startPracticeTarget(retryTargets[0], "retry")}>
+                      Retry first issue
+                    </button>
+                    <button type="button" disabled={puzzleCandidates.length === 0} onClick={() => puzzleCandidates[0] && startPracticeTarget(puzzleCandidates[0], "puzzle")}>
+                      Start puzzle
+                    </button>
+                  </div>
+                  {practiceSession ? (
+                    <div className={styles.activePractice}>
+                      <span>{practiceSession.source === "puzzle" ? "Puzzle" : "Retry"} position</span>
+                      <strong>
+                        {practiceSession.ply}. {practiceSession.san} - {practiceSession.classification}
+                      </strong>
+                      {practiceSession.feedback ? <p>{practiceSession.feedback}</p> : <p>Try a better move from the current board position.</p>}
+                      {practiceSession.revealed && practiceSession.bestMoveSan ? <span className={styles.bestMoveHint}>Suggestion: {practiceSession.bestMoveSan}</span> : null}
+                      <div className={styles.practiceActions}>
+                        <button type="button" onClick={revealPracticeMove} disabled={!practiceSession.bestMoveSan}>
+                          Reveal
+                        </button>
+                        <button type="button" onClick={playPracticeSuggestion} disabled={!practiceSession.bestMove}>
+                          Play suggestion
+                        </button>
+                        <button type="button" onClick={() => setGame(movePly(game, practiceSession.ply - 1))}>
+                          Return
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                  {puzzleCandidates.length > 0 ? (
+                    <ol className={styles.practiceList} aria-label="Extracted puzzle candidates">
+                      {puzzleCandidates.slice(0, 3).map((target) => (
+                        <li key={`puzzle-${target.ply}`}>
+                          <button type="button" onClick={() => startPracticeTarget(target, "puzzle")}>
+                            <Trophy size={14} aria-hidden="true" />
+                            {target.ply}. {target.san}
+                            <span>{target.reason}</span>
+                          </button>
+                        </li>
+                      ))}
+                    </ol>
+                  ) : null}
+                </section>
+
+                <section className={styles.timelinePanel} aria-label="Critical moments timeline">
+                  <div className={styles.sectionTitle}>
+                    <span>Critical moments</span>
+                    <strong>{criticalMoments.length}</strong>
+                  </div>
+                  {criticalMoments.length > 0 ? (
+                    <>
+                      <div className={styles.timelineRail} aria-hidden="true">
+                        {criticalMoments.slice(0, 12).map((moment) => (
+                          <span
+                            key={`rail-${moment.ply}`}
+                            style={
+                              {
+                                "--moment-position": `${game.moves.length > 1 ? ((moment.ply - 1) / (game.moves.length - 1)) * 100 : 0}%`,
+                                "--classification-color": colorForMoveLabel(moment.classification)
+                              } as CSSProperties
+                            }
+                          />
+                        ))}
+                      </div>
+                      <ol className={styles.momentList}>
+                        {criticalMoments.slice(0, 6).map((moment) => (
+                          <li key={`moment-${moment.ply}`}>
+                            <button
+                              type="button"
+                              style={{ "--classification-color": colorForMoveLabel(moment.classification) } as CSSProperties}
+                              onClick={() => setGame(movePly(game, moment.ply))}
+                            >
+                              <span>{moment.label}</span>
+                              <strong>{moment.loss ? `-${formatPawnSwing(moment.loss)}` : moment.gain ? `+${formatPawnSwing(moment.gain)}` : "0.0"}</strong>
+                            </button>
+                          </li>
+                        ))}
+                      </ol>
+                    </>
+                  ) : (
+                    <p>No major swings found yet.</p>
+                  )}
+                </section>
+              </>
+            ) : null}
 
             <section className={styles.moveHistory} aria-label="Previous moves">
               <div className={styles.moveHeader}>

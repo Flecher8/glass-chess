@@ -1,3 +1,5 @@
+import { Chess } from "chess.js";
+
 import { parseBestMove, parseInfoLine } from "./uci-parser";
 import type { EngineAnalysisResult, EngineLine, EngineSettings } from "./types";
 
@@ -19,6 +21,20 @@ type AnalyzeOptions = {
   multiPv?: number;
   onUpdate?: (result: EngineAnalysisResult) => void;
 };
+
+function legalMoveCountForFen(fen: string): number {
+  try {
+    return new Chess(fen).moves().length;
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+}
+
+export function getMinimumAnalysisLineCount(fen: string, targetMultiPv: number, requestedMinimum?: number): number {
+  const requestedLineCount = Math.floor(requestedMinimum ?? Math.min(3, targetMultiPv));
+  const legalMoveCount = Math.max(1, legalMoveCountForFen(fen));
+  return Math.max(1, Math.min(legalMoveCount, targetMultiPv, requestedLineCount));
+}
 
 export class StockfishClient {
   private worker: Worker | null = null;
@@ -62,10 +78,7 @@ export class StockfishClient {
 
     return new Promise((resolve, reject) => {
       const targetMultiPv = Math.max(1, Math.floor(options.multiPv ?? Math.max(3, settings.multiPv)));
-      const minimumLineCount = Math.max(
-        1,
-        Math.min(targetMultiPv, Math.floor(options.minimumLineCount ?? Math.min(3, targetMultiPv)))
-      );
+      const minimumLineCount = getMinimumAnalysisLineCount(fen, targetMultiPv, options.minimumLineCount);
 
       this.pendingAnalysis = {
         fen,

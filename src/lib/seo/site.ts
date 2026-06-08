@@ -8,6 +8,7 @@ export const siteConfig = {
 export const navItems = [
   { href: "/", label: "Home" },
   { href: "/analysis/", label: "Analysis" },
+  { href: "/review/", label: "Review" },
   { href: "/privacy/", label: "Privacy" },
   { href: "/terms/", label: "Terms" },
   { href: "/licenses/", label: "Licenses" }

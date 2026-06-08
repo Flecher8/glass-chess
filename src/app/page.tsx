@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { HomeBoardPreview } from "@/components/chess/HomeBoardPreview";
+import { HeroThreeScene } from "@/components/visual/HeroThreeScene";
 import styles from "./page.module.css";
 
 export const metadata: Metadata = {
@@ -33,33 +34,31 @@ export default function HomePage() {
   return (
     <main>
       <section className={styles.hero}>
-        <div className={styles.heroText}>
-          <p className="eyebrow">Browser chess analysis</p>
-          <h1>Glass Chess</h1>
-          <p>
-            A professional chess analysis workspace for importing games, loading positions, navigating moves, and
-            running Stockfish locally in your browser.
-          </p>
-          <div className={styles.actions}>
-            <Link href="/analysis/" className={styles.primaryAction}>
-              Open analysis
-              <ArrowRight size={18} aria-hidden="true" />
-            </Link>
-            <Link href="/licenses/" className={styles.secondaryAction}>
-              Open source notices
-            </Link>
+        <HeroThreeScene />
+        <div className={styles.heroInner}>
+          <div className={styles.heroText}>
+            <p className="eyebrow">Browser chess analysis</p>
+            <h1>Glass Chess</h1>
+            <p>
+              Import games, inspect positions, review mistakes, and run Stockfish locally in a polished analysis
+              workspace built for privacy-first chess improvement.
+            </p>
+            <div className={styles.actions}>
+              <Link href="/analysis/" className={styles.primaryAction}>
+                Open analysis
+                <ArrowRight size={18} aria-hidden="true" />
+              </Link>
+              <Link href="/review/" className={styles.secondaryAction}>
+                Review a game
+              </Link>
+            </div>
           </div>
-        </div>
-        <div className={styles.preview} aria-label="Chess analysis preview">
-          <div className={styles.previewHeader}>
-            <span>Local engine</span>
-            <strong>+0.42</strong>
+          <div className={styles.heroStats} aria-label="Product capabilities">
+            <span>Local Stockfish</span>
+            <span>PGN and FEN</span>
+            <span>Move review</span>
           </div>
           <HomeBoardPreview />
-          <div className={styles.previewFooter}>
-            <span>Best move</span>
-            <strong>Ng1-f3</strong>
-          </div>
         </div>
       </section>
 
