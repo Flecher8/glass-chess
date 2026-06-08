@@ -1,13 +1,14 @@
 # Glass Chess
 
-Glass Chess is a browser-only chess analysis web app built with Next.js, TypeScript, React, CSS Modules, and local Stockfish analysis.
+Glass Chess is a browser-only chess analysis web app built with Next.js, TypeScript, React, CSS Modules, lazy-loaded Three.js visuals, and local Stockfish analysis.
 
 The MVP is designed for static export and Vercel deployment. It does not use a custom backend, API routes, server actions, database, authentication, analytics, tracking cookies, or server-side Stockfish.
 
 ## Features
 
-- Home, analysis, privacy, terms, licenses, and not found pages
+- Home, analysis, review, privacy, terms, licenses, and not found pages
 - Responsive dark glass interface using plain CSS
+- Lazy-loaded Three.js home hero visual with a CSS fallback
 - PGN import and FEN import
 - Legal move validation with `chess.js`
 - Manual board moves with move navigation
