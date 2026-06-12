@@ -49,6 +49,21 @@ test("analysis board exposes evaluation bar and navigation menu", async ({ page 
     .toBe("black");
 });
 
+test("board theme selector updates board colors and persists", async ({ page }) => {
+  await page.goto("/analysis");
+
+  await page.getByLabel("Open Stockfish settings").click();
+  await page.getByRole("combobox", { name: "Board theme" }).selectOption("high-contrast");
+  await expect(page.locator("#glass-chess-board-square-a1")).toHaveCSS("background-color", "rgb(17, 24, 39)");
+  await page.getByLabel("Close Stockfish settings").click();
+
+  await page.reload({ waitUntil: "networkidle" });
+  await expect(page.locator("#glass-chess-board-square-a1")).toHaveCSS("background-color", "rgb(17, 24, 39)");
+
+  await page.getByLabel("Open Stockfish settings").click();
+  await expect(page.getByRole("combobox", { name: "Board theme" })).toHaveValue("high-contrast");
+});
+
 test("analysis board supports click move targets and hidden legal dots", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "Board click behavior is a desktop interaction.");
 
