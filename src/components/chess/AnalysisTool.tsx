@@ -112,6 +112,18 @@ const neutralMoveMeta = { color: "#88a9c4", symbol: "", label: "Last move" };
 const reviewingMoveMeta = { color: "#88a9c4", label: "Reviewing" };
 const GAME_REVIEW_CONCURRENCY = 2;
 const SUMMARY_LABELS: MoveClassification[] = ["Best", "Excellent", "Good", "Inaccuracy", "Mistake", "Blunder", "Miss", "Great Move", "Brilliant"];
+const MOVE_QUALITY_LEGEND: Array<{ label: MoveClassification; description: string }> = [
+  { label: "Book", description: "Known opening move from the local opening guide." },
+  { label: "Best", description: "Engine top move or no meaningful evaluation loss." },
+  { label: "Excellent", description: "Very small evaluation loss compared with the engine line." },
+  { label: "Good", description: "Playable move with a small evaluation loss." },
+  { label: "Inaccuracy", description: "Noticeable evaluation loss or missed stronger plan." },
+  { label: "Mistake", description: "Large evaluation loss that changes practical chances." },
+  { label: "Blunder", description: "Severe evaluation loss or decisive tactical damage." },
+  { label: "Miss", description: "Failed to use a clearly stronger opportunity." },
+  { label: "Great Move", description: "Difficult strong move that solves a problem." },
+  { label: "Brilliant", description: "Conservative sacrifice-like engine-approved candidate." }
+];
 
 function moveSignature(move: GameMove): string {
   return `${move.ply}:${move.uci}:${move.before}:${move.after}`;
@@ -1520,6 +1532,31 @@ export function AnalysisTool({ mode = "analysis" }: AnalysisToolProps) {
                   );
                 })}
               </ol>
+            </section>
+
+            <section className={styles.moveQualityLegend} aria-label="Move quality legend">
+              <div className={styles.sectionTitle}>
+                <span>Move quality legend</span>
+                <strong>Estimated</strong>
+              </div>
+              <p>Classifications are engine-assisted estimates based on local analysis, selected depth, and position complexity.</p>
+              <ul>
+                {MOVE_QUALITY_LEGEND.map(({ label, description }) => {
+                  const meta = moveQualityMeta[label];
+
+                  return (
+                    <li key={label} style={{ "--classification-color": meta.color } as CSSProperties}>
+                      <span className={styles.legendBadge} aria-hidden="true">
+                        {label === "Book" ? <BookOpen size={14} strokeWidth={3} aria-hidden="true" /> : meta.symbol}
+                      </span>
+                      <div>
+                        <strong>{meta.label}</strong>
+                        <span>{description}</span>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
             </section>
           </div>
 

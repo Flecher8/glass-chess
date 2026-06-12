@@ -24,6 +24,12 @@ test("analysis board exposes evaluation bar and navigation menu", async ({ page 
   await expect(page.getByLabel(/current position evaluation/i)).toBeVisible();
   await expect(page.getByLabel("Engine progress")).toBeVisible();
   await expect(page.getByLabel("Start analysis options")).toBeVisible();
+  const legend = page.getByLabel("Move quality legend");
+  await expect(legend).toBeVisible();
+  await expect(legend).toContainText("Classifications are engine-assisted estimates");
+  for (const label of ["Book", "Best", "Excellent", "Good", "Inaccuracy", "Mistake", "Blunder", "Miss", "Great Move", "Brilliant"]) {
+    await expect(legend.getByText(label, { exact: true })).toBeVisible();
+  }
 
   await page.getByRole("button", { name: /load sample fen/i }).click();
   await expect(page.getByLabel("Start analysis options")).toHaveCount(0);
