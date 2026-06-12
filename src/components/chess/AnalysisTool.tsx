@@ -76,6 +76,17 @@ const samplePgn = `[Event "Sample Game"]
 
 const sampleFen = "r1bqkbnr/1ppp1ppp/p1n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4";
 
+type BoardThemeId = "glass-green" | "graphite" | "blue-steel" | "high-contrast" | "classic-muted";
+
+type BoardThemeOption = {
+  id: BoardThemeId;
+  label: string;
+  description: string;
+  lightSquare: string;
+  darkSquare: string;
+  dropShadow: string;
+};
+
 type MoveDisplayLabel = MoveClassification | "Reviewing";
 
 type PracticeSession = {
@@ -111,6 +122,50 @@ const moveQualityMeta: Record<MoveClassification, { color: string; symbol: strin
 const neutralMoveMeta = { color: "#88a9c4", symbol: "", label: "Last move" };
 const reviewingMoveMeta = { color: "#88a9c4", label: "Reviewing" };
 const GAME_REVIEW_CONCURRENCY = 2;
+const DEFAULT_BOARD_THEME: BoardThemeId = "glass-green";
+const BOARD_THEMES: BoardThemeOption[] = [
+  {
+    id: "glass-green",
+    label: "Glass green",
+    description: "Current calm green glass board.",
+    lightSquare: "#d5e5dc",
+    darkSquare: "#395f63",
+    dropShadow: "inset 0 0 0 4px rgba(126, 231, 184, 0.55)"
+  },
+  {
+    id: "graphite",
+    label: "Graphite",
+    description: "Neutral dark board for long reviews.",
+    lightSquare: "#d0d6d8",
+    darkSquare: "#2b3138",
+    dropShadow: "inset 0 0 0 4px rgba(214, 226, 230, 0.58)"
+  },
+  {
+    id: "blue-steel",
+    label: "Blue steel",
+    description: "Cool blue board with clear contrast.",
+    lightSquare: "#d8e7ef",
+    darkSquare: "#315a70",
+    dropShadow: "inset 0 0 0 4px rgba(102, 178, 255, 0.58)"
+  },
+  {
+    id: "high-contrast",
+    label: "High contrast",
+    description: "Maximum readability in bright rooms.",
+    lightSquare: "#f7fafc",
+    darkSquare: "#111827",
+    dropShadow: "inset 0 0 0 4px rgba(255, 255, 255, 0.72)"
+  },
+  {
+    id: "classic-muted",
+    label: "Classic muted",
+    description: "Soft traditional board with lower glare.",
+    lightSquare: "#ded2b6",
+    darkSquare: "#657754",
+    dropShadow: "inset 0 0 0 4px rgba(238, 221, 180, 0.6)"
+  }
+];
+const BOARD_THEME_IDS = new Set<BoardThemeId>(BOARD_THEMES.map((theme) => theme.id));
 const SUMMARY_LABELS: MoveClassification[] = ["Best", "Excellent", "Good", "Inaccuracy", "Mistake", "Blunder", "Miss", "Great Move", "Brilliant"];
 const MOVE_QUALITY_LEGEND: Array<{ label: MoveClassification; description: string }> = [
   { label: "Book", description: "Known opening move from the local opening guide." },
@@ -127,6 +182,10 @@ const MOVE_QUALITY_LEGEND: Array<{ label: MoveClassification; description: strin
 
 function moveSignature(move: GameMove): string {
   return `${move.ply}:${move.uci}:${move.before}:${move.after}`;
+}
+
+function isBoardThemeId(value: unknown): value is BoardThemeId {
+  return typeof value === "string" && BOARD_THEME_IDS.has(value as BoardThemeId);
 }
 
 function retainRecordThroughPly<T>(record: Record<number, T>, ply: number): Record<number, T> {
@@ -293,6 +352,7 @@ export function AnalysisTool({ mode = "analysis" }: AnalysisToolProps) {
   const [message, setMessage] = useState("Ready");
   const [orientation, setOrientation] = useState<BoardOrientation>("white");
   const [settings, setSettings] = useState<EngineSettings>(defaultSettings);
+  const [boardTheme, setBoardTheme] = useState<BoardThemeId>(DEFAULT_BOARD_THEME);
   const [showLegalMoveHints, setShowLegalMoveHints] = useState(true);
   const [selectedSquare, setSelectedSquare] = useState<{ fen: string; square: ChessSquare } | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -336,6 +396,7 @@ export function AnalysisTool({ mode = "analysis" }: AnalysisToolProps) {
   const currentMoveReview = currentMove ? reviews[currentMove.ply] : undefined;
   const currentMoveMeta = currentMoveClassification ? moveQualityMeta[currentMoveClassification] : neutralMoveMeta;
   const activeAnalysis = analysis?.fen === currentFen ? analysis : null;
+  const activeBoardTheme = BOARD_THEMES.find((theme) => theme.id === boardTheme) ?? BOARD_THEMES[0];
   const currentLine = activeAnalysis?.lines[0];
   const candidateLines = activeAnalysis?.lines.slice(0, 3) ?? [];
   const currentScore = formatSettingScore(currentLine?.score, currentFen, settings.evalFormat);
@@ -408,6 +469,7 @@ export function AnalysisTool({ mode = "analysis" }: AnalysisToolProps) {
         version: number;
         orientation: BoardOrientation;
         settings: EngineSettings;
+        boardTheme: BoardThemeId;
         showLegalMoveHints: boolean;
       }>;
       if (preferences.version !== PREFERENCES_VERSION) {
@@ -420,6 +482,9 @@ export function AnalysisTool({ mode = "analysis" }: AnalysisToolProps) {
         }
         if (preferences.settings) {
           setSettings((current) => ({ ...current, ...preferences.settings, mode: "lite", multiPv: 3 }));
+        }
+        if (isBoardThemeId(preferences.boardTheme)) {
+          setBoardTheme(preferences.boardTheme);
         }
         if (typeof preferences.showLegalMoveHints === "boolean") {
           setShowLegalMoveHints(preferences.showLegalMoveHints);
@@ -437,10 +502,11 @@ export function AnalysisTool({ mode = "analysis" }: AnalysisToolProps) {
         version: PREFERENCES_VERSION,
         orientation,
         settings,
+        boardTheme,
         showLegalMoveHints
       })
     );
-  }, [orientation, settings, showLegalMoveHints]);
+  }, [boardTheme, orientation, settings, showLegalMoveHints]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -1155,11 +1221,11 @@ export function AnalysisTool({ mode = "analysis" }: AnalysisToolProps) {
         overflow: "hidden",
         boxShadow: "0 20px 70px rgba(0, 0, 0, 0.35)"
       },
-      lightSquareStyle: { backgroundColor: "#d5e5dc" },
-      darkSquareStyle: { backgroundColor: "#395f63" },
-      dropSquareStyle: { boxShadow: "inset 0 0 0 4px rgba(126, 231, 184, 0.55)" }
+      lightSquareStyle: { backgroundColor: activeBoardTheme.lightSquare },
+      darkSquareStyle: { backgroundColor: activeBoardTheme.darkSquare },
+      dropSquareStyle: { boxShadow: activeBoardTheme.dropShadow }
     }),
-    [currentFen, handleDrop, handleSquareClick, orientation, squareRenderer]
+    [activeBoardTheme, currentFen, handleDrop, handleSquareClick, orientation, squareRenderer]
   );
 
   return (
@@ -1195,7 +1261,16 @@ export function AnalysisTool({ mode = "analysis" }: AnalysisToolProps) {
                 </span>
               </span>
             </div>
-            <div className={styles.boardFrame}>
+            <div
+              className={styles.boardFrame}
+              data-board-theme={boardTheme}
+              style={
+                {
+                  "--board-theme-light": activeBoardTheme.lightSquare,
+                  "--board-theme-dark": activeBoardTheme.darkSquare
+                } as CSSProperties
+              }
+            >
               <Chessboard options={boardOptions} />
             </div>
           </div>
@@ -1695,6 +1770,42 @@ export function AnalysisTool({ mode = "analysis" }: AnalysisToolProps) {
                 <option value="black">Black</option>
               </select>
             </label>
+            <label>
+              Board theme
+              <select value={boardTheme} onChange={(event) => setBoardTheme(isBoardThemeId(event.target.value) ? event.target.value : DEFAULT_BOARD_THEME)}>
+                {BOARD_THEMES.map((theme) => (
+                  <option key={theme.id} value={theme.id}>
+                    {theme.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className={styles.themeChoices} role="group" aria-label="Board theme choices">
+              {BOARD_THEMES.map((theme) => (
+                <button
+                  key={theme.id}
+                  type="button"
+                  className={clsx(styles.themeChoice, boardTheme === theme.id && styles.themeChoiceActive)}
+                  aria-pressed={boardTheme === theme.id}
+                  onClick={() => setBoardTheme(theme.id)}
+                  style={
+                    {
+                      "--theme-light": theme.lightSquare,
+                      "--theme-dark": theme.darkSquare
+                    } as CSSProperties
+                  }
+                >
+                  <span className={styles.themeSwatch} aria-hidden="true">
+                    <span />
+                    <span />
+                  </span>
+                  <span className={styles.themeChoiceText}>
+                    <strong>{theme.label}</strong>
+                    <small>{theme.description}</small>
+                  </span>
+                </button>
+              ))}
+            </div>
             <div className={styles.modalActions}>
               <button type="button" onClick={() => setOrientation((value) => (value === "white" ? "black" : "white"))}>
                 <FlipHorizontal size={16} aria-hidden="true" />
