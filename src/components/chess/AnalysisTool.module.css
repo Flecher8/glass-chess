@@ -1004,14 +1004,6 @@
   padding: 16px;
 }
 
-.screenshotImportPanel {
-  grid-column: 1 / -1;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 16px;
-  background: var(--panel);
-}
-
 .panel h2 {
   margin: 0;
   font-size: 1rem;
@@ -1135,8 +1127,7 @@
 
   .boardPanel,
   .importPanel,
-  .panel,
-  .screenshotImportPanel {
+  .panel {
     padding: 10px;
   }
 
