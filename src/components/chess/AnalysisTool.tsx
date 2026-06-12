@@ -49,7 +49,6 @@ import { StockfishClient } from "@/lib/engine/stockfish-client";
 import type { EngineAnalysisResult, EngineSettings, EngineStatus, UciScore } from "@/lib/engine/types";
 import { formatScore, scoreForWhite } from "@/lib/engine/uci-parser";
 import styles from "./AnalysisTool.module.css";
-import { ScreenshotPositionImporter } from "./ScreenshotPositionImporter";
 
 const defaultSettings: EngineSettings = {
   mode: "lite",
@@ -1592,10 +1591,6 @@ export function AnalysisTool({ mode = "analysis" }: AnalysisToolProps) {
               </button>
             </div>
             <textarea value={pgnInput} onChange={(event) => setPgnInput(event.target.value)} aria-label="PGN input" />
-          </div>
-
-          <div className={styles.screenshotImportPanel}>
-            <ScreenshotPositionImporter onLoadFen={(fen) => loadFenText(fen, "Screenshot position loaded")} />
           </div>
         </section>
       </div>

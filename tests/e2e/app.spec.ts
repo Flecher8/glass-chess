@@ -70,27 +70,6 @@ test("analysis board supports click move targets and hidden legal dots", async (
   await expect(page.locator('ol[class*="moveTable"] button', { hasText: "Nf6" })).toBeVisible();
 });
 
-test("screenshot importer can load an edited position", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "Screenshot importer edit flow runs only on desktop.");
-
-  await page.goto("/analysis");
-  await expect(page.getByRole("heading", { name: "Screenshot import" })).toBeVisible();
-
-  const whiteKingSquare = page.getByTestId("screenshot-square-60");
-  const blackKingSquare = page.getByTestId("screenshot-square-4");
-
-  for (let clickCount = 0; clickCount < 6; clickCount += 1) {
-    await whiteKingSquare.click();
-  }
-
-  for (let clickCount = 0; clickCount < 12; clickCount += 1) {
-    await blackKingSquare.click();
-  }
-
-  await page.getByRole("button", { name: "Load position" }).click();
-  await expect(page.getByLabel("Current FEN")).toContainText("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
-});
-
 test("desktop arrow keys navigate loaded game moves", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "Keyboard navigation is a desktop interaction.");
 
